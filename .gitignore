@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data
+backend/data/
+data/
+*.db
+*.db-wal
+*.db-shm
+backups/
+storage/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+qa/node_modules/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# QA artefacts
+qa/screenshots/
+qa/debug*.mjs
+
+# OS
+.DS_Store
+Thumbs.db
+# Competition staging
+competition/_submission/
+competition/*_v*.zip
+# Local tunnel/build scratch
+deploy/bin/
+qa/public-*.mjs
+qa/debug*.mjs
+public-*
+lt-*
+pinggy-*
+# TypeScript incremental build
+*.tsbuildinfo

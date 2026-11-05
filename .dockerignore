@@ -1,0 +1,11 @@
+node_modules
+frontend/node_modules
+frontend/dist
+backend/data
+backend/.env
+deploy/.env.production
+backups
+qa/screenshots
+__pycache__
+*.pyc
+.git

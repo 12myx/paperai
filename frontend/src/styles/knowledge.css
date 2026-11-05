@@ -1,0 +1,51 @@
+/* ===========================================================
+   P7 · Knowledge intelligence
+   =========================================================== */
+
+.cluster-chips { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.cluster-count { font-family: var(--font-mono); font-size: 8.6px; color: var(--faint); margin-left: 3px; }
+.auto-tags { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.auto-tags-label { font-size: 8.8px; color: var(--faint); letter-spacing: 0.04em; }
+.auto-tags span:not(.auto-tags-label) {
+  font-size: 9.2px; color: var(--accent); background: var(--accent-soft);
+  border: 1px solid var(--accent-line); border-radius: 999px; padding: 1px 6px;
+}
+.knowledge-version { font-family: var(--font-mono); font-size: 9px; color: var(--faint); white-space: nowrap; }
+.duplicate-panel { display: flex; flex-direction: column; gap: 7px; }
+.duplicate-score { font-family: var(--font-mono); font-size: 11px; color: var(--warn); }
+.duplicate-panel > strong { font-size: 13px; }
+.duplicate-panel > p { font-size: 11.2px; color: var(--muted); line-height: 1.6; }
+.duplicate-pair-list { display: flex; flex-direction: column; gap: 7px; }
+.duplicate-pair { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; background: var(--surface-2); }
+.duplicate-pair > div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 11px; }
+.duplicate-pair button { color: var(--accent); font-size: 11px; text-align: left; }
+.duplicate-pair > div > span { color: var(--faint); font-size: 9px; }
+.version-list { display: flex; flex-direction: column; gap: 8px; max-height: 520px; overflow-y: auto; }
+.version-card { border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; background: var(--surface-2); }
+.version-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.version-head strong { font-family: var(--font-mono); font-size: 10.4px; color: var(--accent); }
+.version-head > span { font-size: 9.4px; color: var(--faint); }
+.version-head .btn { margin-left: auto; }
+.version-card > p { font-size: 10.8px; color: var(--muted); line-height: 1.55; margin-top: 5px; }
+.version-fields { font-size: 9.2px; color: var(--faint); font-family: var(--font-mono); }
+
+.node-tag { fill: #6d7671; stroke: var(--surface); stroke-width: 2; }
+.node-method { fill: #3e6591; stroke: var(--surface); stroke-width: 2; }
+.node-dataset { fill: #a97d3d; stroke: var(--surface); stroke-width: 2; }
+.node-question { fill: #7b5ea7; stroke: var(--surface); stroke-width: 2; }
+.legend-dot.tag { background: #6d7671; }
+.legend-dot.concept { background: #3e6591; }
+
+@media (max-width: 760px) {
+  .cluster-chips { order: 4; flex-basis: 100%; }
+  .knowledge-foot { flex-wrap: wrap; }
+}
+.duplicate-pair-actions { display: flex; align-items: center; gap: 6px; }
+.graph-node.tag .node-label,
+.graph-node.method .node-label,
+.graph-node.dataset .node-label,
+.graph-node.question .node-label { opacity: 0; }
+.graph-node.tag:hover .node-label,
+.graph-node.method:hover .node-label,
+.graph-node.dataset:hover .node-label,
+.graph-node.question:hover .node-label { opacity: 1; }

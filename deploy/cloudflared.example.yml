@@ -1,0 +1,11 @@
+# Named Cloudflare Tunnel example.
+# Quick demo (no account):
+#   cloudflared tunnel --url http://127.0.0.1:8000 --no-autoupdate
+#
+# Production named tunnel:
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_ID.json
+ingress:
+  - hostname: paperlens.example.com
+    service: http://127.0.0.1:8000
+  - service: http_status:404

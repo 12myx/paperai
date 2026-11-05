@@ -1,0 +1,91 @@
+/* ===========================================================
+   P6 · Agent task plan / self-check / task center
+   =========================================================== */
+
+.plan-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  padding: 12px 14px;
+  margin: 8px 0 12px;
+}
+.plan-card.plan-preview { border-color: var(--gold); background: var(--gold-soft); }
+.plan-card.plan-paused { border-color: var(--warn); }
+.plan-card.plan-completed { border-color: var(--accent-line); }
+.plan-card.plan-cancelled, .plan-card.plan-failed { opacity: 0.82; }
+.plan-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.plan-head svg { color: var(--accent); }
+.plan-head strong { font-size: 12px; }
+.plan-source { margin-left: auto; font-family: var(--font-mono); font-size: 9px; color: var(--faint); }
+.plan-note { font-size: 10.6px; color: var(--muted); line-height: 1.55; margin: 6px 0 9px; }
+.plan-steps { display: flex; flex-direction: column; gap: 5px; }
+.plan-step { display: flex; gap: 8px; align-items: flex-start; border-top: 1px dashed var(--line); padding-top: 6px; }
+.plan-step:first-child { border-top: none; padding-top: 0; }
+.plan-step-index { font-family: var(--font-mono); font-size: 9px; color: var(--faint); padding-top: 2px; }
+.plan-step > div { flex: 1; min-width: 0; }
+.plan-step strong { font-size: 10.8px; display: block; color: var(--ink-2); }
+.plan-step p { font-size: 9.8px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+.plan-step-meta { font-family: var(--font-mono); font-size: 8.8px; color: var(--faint); }
+.plan-step-status { color: var(--accent); padding-top: 2px; }
+.plan-step-failed .plan-step-status { color: var(--danger); }
+.plan-step-completed strong { color: var(--ink); }
+.plan-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+.plan-ended { font-size: 9.6px; color: var(--faint); }
+.plan-editor textarea {
+  width: 100%; border: 1px solid var(--line-strong); border-radius: 7px;
+  background: var(--surface); color: var(--ink); padding: 8px 10px;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.7; resize: vertical;
+}
+.plan-editor-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+
+.self-check { border: 1px solid var(--line); border-radius: 8px; margin: 8px 0 4px; background: var(--surface); }
+.self-check.self-warning { border-left: 3px solid var(--warn); }
+.self-check.self-fail { border-left: 3px solid var(--danger); }
+.self-check.self-pass { border-left: 3px solid var(--accent); }
+.self-check-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px; text-align: left; font-size: 10.8px; }
+.self-check-head strong { font-size: 10.8px; }
+.self-check-head span:not(.badge) { margin-left: auto; font-family: var(--font-mono); font-size: 9.4px; color: var(--muted); }
+.self-check-body { padding: 0 10px 9px; }
+.self-check-body p { font-size: 10.4px; color: var(--muted); line-height: 1.55; }
+.self-check-body ul { margin: 5px 0 0; padding-left: 14px; }
+.self-check-body li { font-size: 10.2px; color: var(--muted); line-height: 1.5; margin-bottom: 2px; }
+.self-check-body li.self-issue { color: var(--danger); }
+.self-failed { display: flex; flex-direction: column; gap: 3px; margin-top: 5px; font-size: 9.8px; color: var(--warn); }
+.task-paused-banner {
+  display: flex; align-items: center; gap: 7px; margin: 0 0 8px;
+  padding: 7px 10px; border: 1px solid var(--warn); border-radius: 7px;
+  background: var(--warn-soft); color: var(--warn); font-size: 10.6px;
+}
+
+/* task center */
+.page-tasks { max-width: 1240px; }
+.task-layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 14px; align-items: start; }
+.task-list-card { padding: 6px; }
+.task-list { display: flex; flex-direction: column; gap: 4px; max-height: 680px; overflow-y: auto; }
+.task-list-item { text-align: left; border: 1px solid transparent; border-radius: 8px; padding: 9px 10px; background: transparent; width: 100%; }
+.task-list-item:hover { background: var(--surface-2); }
+.task-list-item.active { background: var(--surface-2); border-color: var(--accent-line); }
+.task-list-head { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.task-list-item strong { font-size: 11.4px; line-height: 1.45; display: block; margin-top: 4px; }
+.task-list-meta { display: flex; gap: 6px; font-size: 9.2px; color: var(--faint); font-family: var(--font-mono); margin-top: 3px; }
+.task-detail { padding: 17px 19px; }
+.task-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.task-detail-head h2 { font-size: 17px; letter-spacing: -0.02em; line-height: 1.45; }
+.task-detail-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 10.2px; color: var(--muted); margin-top: 5px; }
+.task-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.task-section { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+.task-section h3 { font-size: 11.6px; color: var(--muted); margin-bottom: 7px; display: flex; align-items: center; gap: 5px; }
+.task-plan-list { display: flex; flex-direction: column; gap: 5px; }
+.task-plan-row { display: flex; align-items: center; gap: 7px; font-size: 10.8px; }
+.task-plan-row .plan-step-index { min-width: 20px; }
+.task-plan-row span:last-child { margin-left: auto; color: var(--faint); font-family: var(--font-mono); font-size: 9px; }
+.task-result { font-size: 11.4px; color: var(--ink-2); line-height: 1.65; white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
+.task-progress { height: 5px; background: var(--surface-3); border-radius: 99px; overflow: hidden; margin: 9px 0; }
+.task-progress span { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.task-empty { padding: 28px; text-align: center; color: var(--muted); font-size: 11.4px; }
+.task-self { margin-top: 6px; }
+
+@media (max-width: 900px) {
+  .task-layout { grid-template-columns: 1fr; }
+  .task-list { max-height: 280px; }
+}

@@ -1,0 +1,14 @@
+/* ===========================================================
+   P9 · queue / ops
+   =========================================================== */
+
+.queue-panel { padding: 10px 13px; margin-bottom: 12px; border-left: 3px solid var(--accent); }
+.queue-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 10.4px; color: var(--muted); }
+.queue-panel-head > span:first-child { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; color: var(--ink-2); }
+.queue-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.queue-item { display: flex; flex-direction: column; gap: 4px; }
+.queue-item-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 10px; color: var(--faint); }
+.queue-item-head strong { font-size: 10.6px; color: var(--ink-2); font-weight: 550; }
+.queue-progress { height: 4px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.queue-progress span { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width 0.3s; }
+.queue-error { font-size: 9.4px; color: var(--danger); }
