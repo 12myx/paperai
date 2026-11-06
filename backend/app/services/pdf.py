@@ -401,6 +401,8 @@ def extract_pdf(data: bytes, max_pages: int = 400) -> ParsedPaper:
         "keywords": _extract_keywords(page_one_text),
         "parser": "pymupdf",
         "parser_version": pymupdf.__version__,
+        "total_pages": doc.page_count,
+        "truncated": doc.page_count > max_pages,
     }
     if (doc.metadata or {}).get("subject"):
         meta["subject"] = doc.metadata.get("subject")[:300]

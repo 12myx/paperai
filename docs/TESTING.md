@@ -1,6 +1,6 @@
 # 测试记录
 
-> 最近执行：2026-11-04（P9） · Windows 11 · Python 3.12.2 · Node.js 24.15 · Chrome（Playwright channel=chrome）
+> 最近执行：2026-11-06（V3.2 / A0 + A5 + A6 + UX） · Windows 11 · Python 3.12.2 · Node.js 24.15 · Chrome（Playwright channel=chrome）
 
 ## 1. 测试分层
 
@@ -31,14 +31,14 @@ cd qa && npm install && node run.mjs # 终端 B
 
 | 项目 | 结果 |
 | --- | --- |
-| 后端 pytest | **71 passed**，0 failed |
+| 后端 pytest | **80 passed**，0 failed |
 | 前端构建 | **通过**（tsc + vite，无类型错误） |
-| 浏览器 E2E | **38 个步骤全部通过**，0 console/page error，0 HTTP 4xx/5xx 资源 |
+| 浏览器 E2E | **38 个步骤全部通过**，0 console/page error；独立 UX 检查通过 |
 | 生产配置检查 | 默认密钥拒绝启动；SPA 200；无效模型 Key 返回 400；设置接口不泄露密钥 |
 
 构建体积（gzip）：JS ≈ 374 KB，CSS ≈ 32 KB，pdf.worker 1.38 MB（独立 chunk）。
 
-## 4. 后端测试清单（71）
+## 4. 后端测试清单（80）
 
 | 测试 | 验证点 |
 | --- | --- |
@@ -107,6 +107,15 @@ cd qa && npm install && node run.mjs # 终端 B
 | test_quality_rerun_and_fake_citation | 伪造引用被质检捕获 |
 | test_artifact_export_formats | MD/PDF/DOCX 真实下载 |
 | test_artifact_isolation | 成果跨用户隔离 |
+| test_paper_metadata_update | 论文收藏/笔记/标签更新 |
+| test_blank_pdf_is_not_ready | 空白/扫描 PDF 不假 ready |
+| test_export_delete_removes_file | 删除导出同步删文件 |
+| test_prefix_with_fabricated_suffix_is_not_verified | 伪造证据后缀不通过 |
+| test_retry_exhausted_job_reprocesses | attempts 用尽后重试真正执行 |
+| test_changed_paper_invalidates_cache | 论文变化使 RI 缓存失效 |
+| test_interrupted_task_is_marked_failed_on_recovery | 重启后 running 任务恢复 |
+| test_tool_runner_rejects_paper_outside_scope | 工具不能越出选择范围 |
+| test_missing_dataset_is_not_comparable | 未提及数据集不判可比 |
 | test_queue_processes_reprocess_and_reports | 持久队列、进度、恢复路径 |
 | test_rate_limit_returns_429 | 限流 429 + Retry-After |
 | test_incremental_cache_stats | 按论文缓存命中 |

@@ -69,7 +69,10 @@ def _parse_json(text: str) -> dict | None:
 
 
 def _norm(value: str | None) -> str:
-    return re.sub(r"\s+", " ", (value or "")).strip().casefold()
+    text = re.sub(r"\s+", " ", (value or "")).strip()
+    if not text or text == "未提及":
+        return ""
+    return text.casefold()
 
 
 def _sentences(chunks: list[Chunk], tags: tuple[str, ...]) -> list[tuple[Chunk, str]]:
@@ -473,7 +476,7 @@ async def build_conflicts(
                     if not isinstance(item, dict):
                         continue
                     keys = [key for key in (item.get("evidence_keys") or []) if key in by_key]
-                    if not keys:
+                    if not keys or not bool(item.get("comparable", False)):
                         continue
                     conflicts.append(
                         {
@@ -578,10 +581,21 @@ async def build_evolution(
             payload = _parse_json(response.get("content") or "")
             if payload is not None:
                 by_key = {citation["key"]: citation for citation in citations}
+                valid_papers = {paper.id for paper in papers}
                 for item in payload.get("relations") or []:
                     if not isinstance(item, dict):
                         continue
                     keys = [key for key in (item.get("evidence_keys") or []) if key in by_key]
+                    if not keys:
+                        continue
+                    from_paper = str(item.get("from_paper") or "")
+                    to_paper = str(item.get("to_paper") or "")
+                    if not from_paper or not to_paper:
+                        continue
+                    if from_paper not in valid_papers or to_paper not in valid_papers:
+                        continue
+                    if to_paper and to_paper not in valid_papers:
+                        continue
                     relations.append(
                         {
                             "from_paper": str(item.get("from_paper") or ""),

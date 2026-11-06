@@ -14,7 +14,7 @@ from sqlalchemy.exc import OperationalError
 
 from ..db import SessionLocal
 from ..models import Paper, ProcessingJob, User, utcnow
-from .processing import process_paper
+from .processing import PermanentProcessingError, process_paper
 
 logger = logging.getLogger("paperlens.queue")
 
@@ -63,6 +63,9 @@ class ProcessingQueue:
                 job.status = "queued"
                 job.stage = "恢复排队"
                 job.progress = 0
+                job.attempts = 0
+                job.started_at = None
+                job.finished_at = None
                 self._queue.put_nowait(job.id)  # type: ignore[union-attr]
             db.commit()
 
@@ -92,6 +95,8 @@ class ProcessingQueue:
                 row.stage = "重新排队"
                 row.progress = 0
                 row.error = None
+                row.attempts = 0
+                row.started_at = None
                 row.finished_at = None
                 db.commit()
                 self._queue.put_nowait(row.id)  # type: ignore[union-attr]
@@ -142,6 +147,9 @@ class ProcessingQueue:
             paper_id = job.paper_id
             max_attempts = job.max_attempts or 3
             start_attempt = job.attempts or 0
+            if start_attempt >= max_attempts:
+                # Defensive recovery for old jobs persisted before attempts were reset.
+                start_attempt = 0
 
         for attempt in range(start_attempt + 1, max_attempts + 1):
             self._set(
@@ -178,7 +186,8 @@ class ProcessingQueue:
                 return
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Processing attempt %s failed for %s", attempt, paper_id)
-                if attempt < max_attempts:
+                permanent = isinstance(exc, PermanentProcessingError)
+                if attempt < max_attempts and not permanent:
                     self._set(
                         job_id,
                         status="retrying",

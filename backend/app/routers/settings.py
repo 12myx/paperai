@@ -12,9 +12,11 @@ from ..config import settings as app_settings
 from ..db import get_db
 from ..deps import get_current_user, get_user_settings
 from ..models import (
-    AgentRun, AgentStep, Annotation, Chunk, Collection, CollectionPaper, Conversation,
-    ExportRecord, Figure, KnowledgeItem, KnowledgeLink, Message, Paper, PaperPage,
-    Project, ProjectItem, Section, UsageEvent, User, UserSettings, utcnow,
+    AcademicArtifact, AgentRun, AgentTask, Annotation, ArtifactQualityReport, Chunk,
+    Collection, CollectionPaper, Conversation, Evidence, ExportRecord, Figure,
+    IntelligenceReport, KnowledgeItem, KnowledgeLink, KnowledgeMeta, KnowledgeVersion,
+    Message, Paper, PaperFacet, PaperPage, ProcessingJob, Project, ProjectItem,
+    ResearchAnalysis, ResearchInsight, Section, UsageEvent, User, UserSettings, utcnow,
 )
 from ..schemas import AccountDeleteRequest, ModelKeyRequest, SettingsUpdate
 from ..security import encrypt_secret, verify_password
@@ -165,11 +167,32 @@ def delete_account(payload: AccountDeleteRequest, user: User = Depends(get_curre
     if not verify_password(payload.password, user.password_hash):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "密码不正确")
     user_id = user.id
-    for model in (AgentStep, AgentRun, Annotation, Chunk, Figure, KnowledgeLink, KnowledgeItem,
-                  ProjectItem, Project, CollectionPaper, Collection, Section, PaperPage,
-                  ExportRecord, Message, Conversation, UserSettings, UsageEvent):
-        if hasattr(model, "user_id"):
-            db.execute(delete(model).where(model.user_id == user_id))
+    # Delete children before parents. Most of these tables do not have an ORM
+    # relationship, so database cascades alone are not enough.
+    for model in (
+        AgentRun,
+        AgentTask,
+        ArtifactQualityReport,
+        AcademicArtifact,
+        Evidence,
+        ResearchInsight,
+        ResearchAnalysis,
+        IntelligenceReport,
+        KnowledgeVersion,
+        KnowledgeMeta,
+        KnowledgeLink,
+        KnowledgeItem,
+        ProcessingJob,
+        PaperFacet,
+        ProjectItem,
+        Project,
+        Collection,
+        ExportRecord,
+        Conversation,
+        Annotation,
+        Figure,
+    ):
+        db.execute(delete(model).where(model.user_id == user_id))
     paper_ids = [p.id for p in db.execute(select(Paper).where(Paper.user_id == user_id)).scalars().all()]
     if paper_ids:
         db.execute(delete(Chunk).where(Chunk.paper_id.in_(paper_ids)))
@@ -179,6 +202,7 @@ def delete_account(payload: AccountDeleteRequest, user: User = Depends(get_curre
         db.execute(delete(PaperPage).where(PaperPage.paper_id.in_(paper_ids)))
         db.execute(delete(Paper).where(Paper.id.in_(paper_ids)))
     db.execute(delete(UsageEvent).where(UsageEvent.user_id == user_id))
+    db.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
     db.execute(delete(User).where(User.id == user_id))
     db.commit()
     storage.delete_user(user_id)

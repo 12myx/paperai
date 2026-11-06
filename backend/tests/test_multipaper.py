@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 from app.db import SessionLocal
 from app.models import PaperFacet
+from app.services.multipaper import _comparability
 
 
 def _other_user(client) -> dict:
@@ -114,3 +116,24 @@ def test_matrix_isolation(client, auth, paper, paper_b):
 def test_matrix_requires_at_least_one_paper(client, auth):
     response = client.post("/api/research/matrix", headers=auth["headers"], json={"paper_ids": []})
     assert response.status_code == 422
+
+
+def test_missing_dataset_is_not_comparable():
+    papers = [
+        SimpleNamespace(id="a", title="Paper A", year=2024),
+        SimpleNamespace(id="b", title="Paper B", year=2025),
+    ]
+    facets = [
+        SimpleNamespace(
+            paper_id="a",
+            fields={"dataset": {"text": "未提及"}, "metrics": {"text": "未提及"}},
+        ),
+        SimpleNamespace(
+            paper_id="b",
+            fields={"dataset": {"text": "未提及"}, "metrics": {"text": "未提及"}},
+        ),
+    ]
+    pair = _comparability(None, papers, facets)[0]
+    assert pair["same_dataset"] is False
+    assert pair["same_metric"] is False
+    assert pair["comparable"] is False

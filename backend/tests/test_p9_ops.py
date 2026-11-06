@@ -31,6 +31,41 @@ def test_queue_processes_reprocess_and_reports(client, auth, paper):
     assert detail.status_code == 200
 
 
+def test_retry_exhausted_job_reprocesses(client, auth, paper):
+    from app.db import SessionLocal
+    from app.models import ProcessingJob
+    from app.models import User
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == auth["user"]["email"]).one()
+        job = ProcessingJob(
+            user_id=user.id,
+            paper_id=paper["id"],
+            status="failed",
+            stage="失败",
+            progress=0,
+            attempts=3,
+            max_attempts=3,
+            error="forced failure",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    retried = client.post("/api/jobs/" + job_id + "/retry", headers=auth["headers"])
+    assert retried.status_code == 200, retried.text
+    deadline = time.time() + 25
+    job = None
+    while time.time() < deadline:
+        job = client.get("/api/jobs/" + job_id, headers=auth["headers"]).json()["job"]
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.3)
+    assert job is not None
+    assert job["status"] == "completed", job
+    assert job["attempts"] >= 1
+
+
 def test_rate_limit_returns_429(client, auth):
     limiter.reset(limit=2)
     try:

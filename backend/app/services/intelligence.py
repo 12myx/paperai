@@ -13,7 +13,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -31,6 +31,7 @@ from .multipaper import DIMENSIONS, _facet_citations, ensure_facets
 from .retrieval import STOPWORDS
 
 SCOPE_TYPES = {"all", "papers", "collection", "project"}
+ALL_SCOPE_LIMIT = 120
 
 
 class IntelligenceError(ValueError):
@@ -49,6 +50,7 @@ def resolve_scope(
     scope_type = scope_type if scope_type in SCOPE_TYPES else "all"
     label = "全部资料库"
     selected: list[Paper] = []
+    all_total = 0
 
     if scope_type == "project":
         project = db.get(Project, scope_id or "")
@@ -87,14 +89,19 @@ def resolve_scope(
                 db.execute(select(Paper).where(Paper.user_id == user.id, Paper.id.in_(ids))).scalars().all()
             )
     else:
+        all_total = db.execute(
+            select(func.count(Paper.id)).where(Paper.user_id == user.id, Paper.status == "ready")
+        ).scalar() or 0
         selected = list(
             db.execute(
                 select(Paper)
                 .where(Paper.user_id == user.id, Paper.status == "ready")
                 .order_by(Paper.created_at.desc())
-                .limit(60)
+                .limit(ALL_SCOPE_LIMIT)
             ).scalars().all()
         )
+        if all_total > ALL_SCOPE_LIMIT:
+            label = f"最近 {ALL_SCOPE_LIMIT} 篇（资料库共 {all_total} 篇）"
 
     selected = [paper for paper in selected if paper.status == "ready"]
     if not selected:
@@ -113,6 +120,7 @@ def resolve_scope(
         "unknown_years": unknown_years,
         "boundary": "仅基于资料库内论文，不代表全球学术领域",
         "external_data": False,
+        "limited": scope_type == "all" and all_total > ALL_SCOPE_LIMIT,
     }
     return selected, scope
 
@@ -190,8 +198,21 @@ def _save_report(
     return report
 
 
-def _latest_report(db: Session, user: User, kind: str, scope: dict) -> IntelligenceReport | None:
-    return db.execute(
+def _source_signature(papers: list[Paper], facets: list) -> str:
+    parts = [
+        f"{paper.id}:{paper.updated_at}:{paper.title}:{(paper.meta or {}).get('chunk_count', '')}"
+        for paper in papers
+    ]
+    for facet in sorted(facets, key=lambda item: item.paper_id):
+        parts.append(
+            f"{facet.paper_id}:{facet.updated_at}:"
+            + json.dumps(facet.fields or {}, sort_keys=True, default=str, ensure_ascii=False)
+        )
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _latest_report(db: Session, user: User, kind: str, scope: dict, signature: str | None = None) -> IntelligenceReport | None:
+    report = db.execute(
         select(IntelligenceReport)
         .where(
             IntelligenceReport.user_id == user.id,
@@ -204,6 +225,10 @@ def _latest_report(db: Session, user: User, kind: str, scope: dict) -> Intellige
         .order_by(IntelligenceReport.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    if report is not None and signature is not None:
+        if (report.data or {}).get("_source_signature") != signature:
+            return None
+    return report
 
 
 # ------------------------------------------------------------------ landscape
@@ -321,6 +346,7 @@ def build_landscape(db: Session, user: User, papers: list[Paper], facets: list, 
         except LLMError:
             data["note"] = "模型调用失败，已回退为本地抽取全景。"
 
+    data["_source_signature"] = _source_signature(papers, facets)
     report = _save_report(
         db, user, kind="landscape", scope=scope, papers=papers, data=data,
         citations=citations, local=local, model=model_name,
@@ -377,6 +403,7 @@ def build_trends(db: Session, user: User, papers: list[Paper], facets: list, sco
         "note": "本地统计：仅基于资料库内真实出版年份与论文画像词频；样本量小或年份缺失时请勿过度解读，不代表全球趋势。",
         "scope": scope,
     }
+    data["_source_signature"] = _source_signature(papers, facets)
     report = _save_report(
         db, user, kind="trends", scope=scope, papers=papers, data=data,
         citations=citations, local=True, model=None,
@@ -471,6 +498,7 @@ def build_connections(db: Session, user: User, papers: list[Paper], facets: list
         "note": "节点与边均由论文画像、个人知识与来源关系生成；没有来源的边不会出现。",
         "scope": scope,
     }
+    data["_source_signature"] = _source_signature(papers, facets)
     report = _save_report(
         db, user, kind="connections", scope=scope, papers=papers, data=data,
         citations=citations, local=True, model=None,
@@ -591,6 +619,7 @@ def build_opportunities(db: Session, user: User, papers: list[Paper], facets: li
         except LLMError:
             data["note"] = "模型调用失败，已回退为本地启发式建议。"
 
+    data["_source_signature"] = _source_signature(papers, facets)
     report = _save_report(
         db, user, kind="opportunities", scope=scope, papers=papers, data=data,
         citations=citations, local=local, model=model_name,
@@ -636,8 +665,9 @@ async def build_overview(
     }
     reports = {}
     current_ids = {paper.id for paper in papers}
+    signature = _source_signature(papers, facets)
     for kind, builder in builders.items():
-        cached = None if force else _latest_report(db, user, kind, scope)
+        cached = None if force else _latest_report(db, user, kind, scope, signature)
         if cached is not None and set(cached.paper_ids or []) != current_ids:
             cached = None
         report = cached or builder()

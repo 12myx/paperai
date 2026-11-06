@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import * as pdfjsLib from "pdfjs-dist";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import pdfWorker from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import {
   ArrowLeft,
   BookmarkPlus,
@@ -193,7 +193,9 @@ export function Reader() {
 
   useEffect(() => {
     if (!pdf) return;
-    const page = Number(searchParams.get("page"));
+    const requested = Number(searchParams.get("page"));
+    const saved = Number(localStorage.getItem("paperlens.reader." + paperId) || "0");
+    const page = requested > 0 ? requested : saved;
     if (page && page > 0) {
       window.setTimeout(() => scrollToPage(page, searchParams.get("chunk")), 600);
     }

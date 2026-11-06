@@ -240,7 +240,7 @@ async def stream_chat(db: Session, user: User, request: ChatRequest) -> AsyncIte
     db.refresh(run)
 
     if task is None:
-        plan = agent_tasks.build_plan(message_text, request.mode, papers)
+        plan, plan_source = await agent_tasks.build_plan_with_model(message_text, request.mode, papers, config)
         task = agent_tasks.create_task(
             db,
             user,
@@ -250,12 +250,15 @@ async def stream_chat(db: Session, user: User, request: ChatRequest) -> AsyncIte
             scope_ids=list(request.scope_ids or []),
             conversation_id=conversation.id,
             plan=plan,
+            plan_source=plan_source,
             status="running",
             plan_confirmed=True,
         )
     else:
         if not task.plan:
-            task.plan = agent_tasks.build_plan(message_text, request.mode, papers)
+            task.plan, task.plan_source = await agent_tasks.build_plan_with_model(
+                message_text, request.mode, papers, config
+            )
         task.status = "running"
         task.plan_confirmed = True
         task.error = None

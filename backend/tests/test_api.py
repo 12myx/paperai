@@ -48,6 +48,48 @@ def test_paper_parsing_extracts_structure(paper):
     assert "retrieval" in (paper["abstract"] or "").lower()
 
 
+def test_paper_metadata_update(client, auth, paper):
+    response = client.patch(
+        f"/api/papers/{paper['id']}",
+        headers=auth["headers"],
+        json={"favorite": True, "note": "metadata note", "tags": ["retrieval", "updated"]},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()["paper"]
+    assert body["favorite"] is True
+    assert body["note"] == "metadata note"
+    assert "updated" in body["tags"]
+
+
+def test_blank_pdf_is_not_ready(client, auth):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    doc = canvas.Canvas(buffer, pagesize=A4)
+    doc.showPage()
+    doc.save()
+    upload = client.post(
+        "/api/papers",
+        headers=auth["headers"],
+        files={"file": ("blank.pdf", buffer.getvalue(), "application/pdf")},
+        data={"allow_duplicate": "true"},
+    )
+    assert upload.status_code == 201, upload.text
+    paper_id = upload.json()["paper"]["id"]
+    import time
+    detail = None
+    for _ in range(40):
+        detail = client.get(f"/api/papers/{paper_id}", headers=auth["headers"])
+        if detail.json()["status"] in {"ready", "failed"}:
+            break
+        time.sleep(0.25)
+    assert detail is not None
+    body = detail.json()
+    assert body["status"] == "failed", body
+    assert "可检索文本" in (body.get("error") or "")
+
+
 def test_duplicate_detection(client, auth, sample_pdf_bytes):
     first = client.post(
         "/api/papers",
@@ -391,6 +433,29 @@ def test_export_knowledge_items(client, auth, paper):
     assert "可导出的知识".encode("utf-8") in download.content
 
 
+def test_export_delete_removes_file(client, auth):
+    from pathlib import Path
+    from app.db import SessionLocal
+    from app.models import ExportRecord
+    from app.services.storage import storage
+
+    created = client.post(
+        "/api/exports",
+        headers=auth["headers"],
+        json={"kind": "test", "format": "md", "title": "delete-file-check", "content": "# delete me"},
+    )
+    assert created.status_code == 201, created.text
+    export_id = created.json()["export"]["id"]
+    with SessionLocal() as db:
+        record = db.get(ExportRecord, export_id)
+        assert record is not None
+        path = storage.abs_path(record.path)
+    assert path.exists()
+    deleted = client.delete(f"/api/exports/{export_id}", headers=auth["headers"])
+    assert deleted.status_code == 200
+    assert not path.exists()
+
+
 def test_delete_requires_confirmation(client, auth, sample_pdf_bytes_b):
     upload = client.post(
         "/api/papers",
@@ -407,8 +472,18 @@ def test_delete_requires_confirmation(client, auth, sample_pdf_bytes_b):
     assert client.get(f"/api/papers/{paper_id}", headers=auth["headers"]).status_code == 404
 
 def test_account_deletion_removes_data(client):
+    from app.db import SessionLocal
+    from app.models import AgentTask
+
     auth = _register(client, "delete-account")
     client.post("/api/knowledge", headers=auth["headers"], json={"title": "临时数据", "content": "将被删除"})
+    task_response = client.post(
+        "/api/agent/tasks/plan",
+        headers=auth["headers"],
+        json={"message": "删除账号前的测试任务", "scope_type": "all"},
+    )
+    assert task_response.status_code == 200, task_response.text
+    task_id = task_response.json()["task"]["id"]
     wrong = client.request(
         "DELETE", "/api/settings/account", headers=auth["headers"],
         json={"password": "Research123!", "confirm": "NO"},
@@ -422,3 +497,5 @@ def test_account_deletion_removes_data(client):
     login = client.post("/api/auth/login", json={"email": auth["email"], "password": "Research123!"})
     assert login.status_code == 401
     assert client.get("/api/settings", headers=auth["headers"]).status_code == 401
+    with SessionLocal() as db:
+        assert db.get(AgentTask, task_id) is None

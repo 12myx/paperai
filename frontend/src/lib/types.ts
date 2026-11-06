@@ -545,6 +545,7 @@ export interface IntelligenceScope {
   unknown_years: number;
   boundary: string;
   external_data: boolean;
+  limited?: boolean;
 }
 
 export interface LandscapeItem {

@@ -78,6 +78,32 @@ def test_overview_cache_and_force(client, auth, paper, paper_b):
     assert forced["reports"]["landscape"]["id"] != ids["landscape"]
 
 
+def test_changed_paper_invalidates_cache(client, auth, paper, paper_b):
+    first = client.post(
+        "/api/intelligence/overview",
+        headers=auth["headers"],
+        json={"scope_type": "all", "force": True},
+    ).json()
+    old_id = first["reports"]["landscape"]["id"]
+    updated = client.patch(
+        "/api/papers/" + paper["id"],
+        headers=auth["headers"],
+        json={"title": paper["title"] + "（更新）"},
+    )
+    assert updated.status_code == 200, updated.text
+    second = client.post(
+        "/api/intelligence/overview",
+        headers=auth["headers"],
+        json={"scope_type": "all", "force": False},
+    ).json()
+    assert second["reports"]["landscape"]["id"] != old_id
+    client.patch(
+        "/api/papers/" + paper["id"],
+        headers=auth["headers"],
+        json={"title": paper["title"]},
+    )
+
+
 def test_project_scope(client, auth, paper):
     project = client.post(
         "/api/projects",

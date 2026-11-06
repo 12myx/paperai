@@ -69,6 +69,17 @@ class Storage:
         return str(target.relative_to(self.root)).replace("\\", "/")
 
     # ---------------------------------------------------------------- delete
+    def delete_relative(self, relative: str) -> None:
+        try:
+            path = self.abs_path(relative)
+        except ValueError:
+            return
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
     def delete_paper(self, user_id: str, paper_id: str) -> None:
         shutil.rmtree(self.paper_dir(user_id, paper_id), ignore_errors=True)
 

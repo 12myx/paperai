@@ -40,7 +40,6 @@ export function Home() {
   const { messages, streaming, paused, send, stop, reset, conversationId, loadConversation, executePlan, updatePlan, pause, resume, cancel } = useChat({
     mode,
     scope,
-    initialConversationId: initialConversation,
     onConversation: (id) => {
       const params = new URLSearchParams(searchParams);
       params.set("conversation", id);

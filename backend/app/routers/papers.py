@@ -195,7 +195,7 @@ def update_paper(paper_id: str, payload: PaperUpdate, user: User = Depends(get_c
         paper.note = payload.note[:5000]
     paper.updated_at = utcnow()
     db.commit()
-    invalidate(user.id)
+    invalidate_paper(user.id, paper.id)
     return {"paper": paper_brief(paper)}
 
 

@@ -461,6 +461,7 @@ export function ScopeBoundary({ scope }: { scope: IntelligenceScope }) {
         {scope.boundary} · {scope.paper_count} 篇论文
         {scope.year_min ? ` · ${scope.year_min}–${scope.year_max}` : ""}
         {scope.unknown_years ? ` · ${scope.unknown_years} 篇年份未知` : ""}
+        {scope.limited ? " · 已达单次分析上限，请缩小范围" : ""}
       </span>
     </div>
   );

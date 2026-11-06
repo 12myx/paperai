@@ -310,10 +310,18 @@ class ToolRunner:
         result["summary"] = re.sub(r"\[C(\d+)\]", lambda m: f"[{mapping.get('C' + m.group(1), m.group(0))}]", summary)
         return result
 
+    def _scoped_ids(self, requested: list[str] | None) -> list[str] | None:
+        if requested is None:
+            return None if self.scope_ids is None else list(self.scope_ids)
+        if self.scope_ids is None:
+            return list(dict.fromkeys(requested))
+        allowed = set(self.scope_ids)
+        return [paper_id for paper_id in dict.fromkeys(requested) if paper_id in allowed]
+
     def _papers(self, paper_ids: list[str] | None) -> list[Paper]:
-        ids = paper_ids or self.scope_ids
+        ids = self._scoped_ids(paper_ids)
         query = select(Paper).where(Paper.user_id == self.user.id)
-        if ids:
+        if ids is not None:
             query = query.where(Paper.id.in_(ids))
         return list(self.db.execute(query.order_by(Paper.created_at)).scalars().all())
 
@@ -321,6 +329,8 @@ class ToolRunner:
         paper = self.db.get(Paper, paper_id)
         if paper is None or paper.user_id != self.user.id:
             raise ToolError("未找到该论文，或无权访问")
+        if self.scope_ids is not None and paper.id not in set(self.scope_ids):
+            raise ToolError("该论文不在本次研究范围内")
         return paper
 
     def _guard(self, name: str, args: dict, label: str, preview: str) -> dict:
@@ -347,19 +357,18 @@ class ToolRunner:
 
     async def tool_search_papers(self, query: str, limit: int = 8) -> dict:
         pattern = f"%{query.strip()}%"
-        rows = self.db.execute(
-            select(Paper)
-            .where(
-                Paper.user_id == self.user.id,
-                or_(
-                    Paper.title.ilike(pattern),
-                    Paper.abstract.ilike(pattern),
-                    Paper.authors.ilike(pattern),
-                    cast(Paper.tags, String).ilike(pattern),
-                ),
-            )
-            .limit(max(1, min(limit, 20)))
-        ).scalars().all()
+        query_stmt = select(Paper).where(
+            Paper.user_id == self.user.id,
+            or_(
+                Paper.title.ilike(pattern),
+                Paper.abstract.ilike(pattern),
+                Paper.authors.ilike(pattern),
+                cast(Paper.tags, String).ilike(pattern),
+            ),
+        )
+        if self.scope_ids is not None:
+            query_stmt = query_stmt.where(Paper.id.in_(self.scope_ids))
+        rows = self.db.execute(query_stmt.limit(max(1, min(limit, 20)))).scalars().all()
         if not rows and query:
             for cite in rag_search(self.db, self.user.id, query, self.scope_ids, top_k=limit):
                 paper = self.db.get(Paper, cite["paper_id"])
@@ -412,7 +421,9 @@ class ToolRunner:
         return {"summary": header + "\n\n".join(blocks), "citations": citations, "data": {"paper_id": paper.id, "sections": list(sections)}}
 
     async def tool_retrieve_chunks(self, query: str, paper_ids: list[str] | None = None, top_k: int = 8) -> dict:
-        ids = paper_ids or self.scope_ids
+        ids = self._scoped_ids(paper_ids)
+        if ids is not None and not ids:
+            return {"summary": "所选研究范围内没有可检索的论文。", "citations": [], "data": {"count": 0}}
         citations = rag_search(self.db, self.user.id, query, ids, top_k=max(1, min(top_k, 12)))
         if not citations:
             return {"summary": "在所选范围内没有检索到与问题相关的原文片段。", "citations": [], "data": {"count": 0}}
@@ -500,7 +511,10 @@ class ToolRunner:
         return {"summary": "\n".join(lines), "citations": landscape.get("citations") or [], "data": data}
 
     async def tool_extract_knowledge(self, instruction: str, paper_ids: list[str] | None = None) -> dict:
-        citations = rag_search(self.db, self.user.id, instruction, paper_ids or self.scope_ids, top_k=8)
+        ids = self._scoped_ids(paper_ids)
+        if ids is not None and not ids:
+            return {"summary": "所选研究范围内没有可提取的论文。", "citations": [], "data": {}}
+        citations = rag_search(self.db, self.user.id, instruction, ids, top_k=8)
         if not citations:
             return {"summary": "没有找到与提取指令相关的原文。", "citations": [], "data": {}}
         evidence = "\n\n".join(f"[{c['key']}] {c['quote'][:800]}" for c in citations)
@@ -572,8 +586,9 @@ class ToolRunner:
     async def tool_extract_figures(self, paper_id: str | None = None, query: str = "") -> dict:
         statement = select(Figure).where(Figure.user_id == self.user.id)
         if paper_id:
-            statement = statement.where(Figure.paper_id == paper_id)
-        elif self.scope_ids:
+            paper = self._paper(paper_id)
+            statement = statement.where(Figure.paper_id == paper.id)
+        elif self.scope_ids is not None:
             statement = statement.where(Figure.paper_id.in_(self.scope_ids))
         figures = list(self.db.execute(statement.limit(200)).scalars().all())
         if query:

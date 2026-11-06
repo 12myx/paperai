@@ -124,6 +124,8 @@ def delete_export(export_id: str, user: User = Depends(get_current_user), db: Se
     record = db.get(ExportRecord, export_id)
     if record is None or record.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "导出文件不存在或无权访问")
+    relative = record.path
     db.delete(record)
     db.commit()
+    storage.delete_relative(relative)
     return {"ok": True}

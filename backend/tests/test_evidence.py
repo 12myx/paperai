@@ -77,6 +77,42 @@ def test_unverifiable_quote_is_marked(client, auth, paper):
     assert evidence["confidence"] <= 0.3
 
 
+def test_prefix_with_fabricated_suffix_is_not_verified(client, auth, paper):
+    chunk = _first_chunk(paper["id"])
+    normalized = " ".join(chunk.text.split())
+    quote = normalized[:90] + "这是伪造的后半段内容。"
+    response = client.post(
+        "/api/evidence",
+        headers=auth["headers"],
+        json={
+            "paper_id": paper["id"],
+            "chunk_id": chunk.id,
+            "page": chunk.page_start,
+            "quote": quote,
+            "claim": "伪造后缀不应通过",
+            "evidence_type": "direct",
+        },
+    )
+    assert response.status_code == 201, response.text
+    evidence = response.json()["evidence"]
+    assert evidence["verified"] is False, evidence["verification_note"]
+    ellipsis_quote = normalized[:90] + "…伪造后缀"
+    ellipsis = client.post(
+        "/api/evidence",
+        headers=auth["headers"],
+        json={
+            "paper_id": paper["id"],
+            "chunk_id": chunk.id,
+            "page": chunk.page_start,
+            "quote": ellipsis_quote,
+            "claim": "省略号后的伪造内容不应通过",
+            "evidence_type": "direct",
+        },
+    )
+    assert ellipsis.status_code == 201
+    assert ellipsis.json()["evidence"]["verified"] is False
+
+
 def test_evidence_type_validation_and_insufficient(client, auth, paper):
     invalid = client.post(
         "/api/evidence",

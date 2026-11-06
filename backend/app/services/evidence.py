@@ -71,19 +71,14 @@ def verify_quote(chunk_text: str, quote: str) -> tuple[bool, str]:
     if q in text:
         return True, "原文精确匹配"
 
-    core = re.split(r"…|\.\.\.", q)[0].strip()
-    if len(core) >= 40 and core in text:
+    segments = [normalize_text(part).strip() for part in re.split(r"…|\.\.\.", q)]
+    segments = [part for part in segments if part]
+    if segments and all(part in text for part in segments):
         return True, "原文片段匹配"
 
     sentences = [s for s in re.split(r"(?<=[。！？.!?])\s*", q) if len(normalize_text(s)) >= 30]
-    if sentences:
-        hit = sum(1 for sentence in sentences if normalize_text(sentence) in text)
-        if hit / len(sentences) >= 0.6:
-            return True, f"句子匹配 {hit}/{len(sentences)}"
-
-    prefix = q[:90]
-    if len(prefix) >= 45 and prefix in text:
-        return True, "前缀匹配"
+    if sentences and all(normalize_text(sentence) in text for sentence in sentences):
+        return True, f"句子完整匹配 {len(sentences)}/{len(sentences)}"
     return False, "引用未在原文中找到（可能已被截断或错误生成）"
 
 

@@ -54,6 +54,7 @@ PaperLens 不是“又一个 PDF 聊天框”。它把 **PDF 解析 → 章节�
 | P7 知识智能 | 自动标签、混合检索、去重、聚类、版本历史、合并 | ✅ |
 | P8 学术成果 | 综述/报告/开题/计划/实验/PPT 大纲 + Quality Checker | ✅ |
 | P9 性能与稳定 | 持久队列、增量缓存、限流、超时重试、备份恢复 | ✅ |
+| V3.2 产品升级 | 修复 7 个信任缺陷、RI 缓存/可比性、Agent 恢复/规划、全局搜索/侧栏/阅读恢复 | ✅ |
 | 知识库 | 知识片段、标签、来源页码、置顶、关联图谱、导出 | ✅ |
 | 图表库 | 图表提取、预览、注释、收藏、AI 解释（文本依据） | ✅ |
 | 研究项目 | 目标、进度、论文/笔记条目、项目导出 | ✅ |
@@ -126,7 +127,7 @@ python scripts/qa_seed.py   # 生成示例账号与两篇 PDF；密码由 QA_PAS
 ## 测试
 
 ```bash
-# 后端（71 个用例）
+# 后端（80 个用例）
 cd backend && python -m pytest tests -q
 
 # 前端类型检查 + 构建
@@ -138,12 +139,13 @@ cd qa && npm install && $env:QA_EMAIL="..."; $env:QA_PASSWORD="..."; node run.mj
 
 最近一次结果：
 
-- 后端：**71 passed**
+- 后端：**80 passed**
 - 前端：TypeScript 严格模式构建通过
 - 浏览器 QA：**38 个步骤全部通过，0 console/page error**（桌面 1440×900 + 移动 390×844）
+- 独立 API 全流程：**88 / 88 通过**；搜索、侧栏折叠、阅读位置恢复、历史深链接额外通过
 - 覆盖：登录 → 流式对话与引用 → 证据抽屉 → 阅读器 → 文字选择高亮 → 刷新恢复 → 批注转证据 → 总结与证据 → 批判性评估 → DOCX 下载 → 多论文对比 → 证据矩阵 → 观点冲突 → 方法演化 → 研究缺口与跨论文验证 → 片段对比 → 知识智能 → 证据库 → 研究情报 → Agent 计划与执行 → 任务中心 → 学术成果 + 质检 + 导出 → 图表 → 项目 → 历史 → 设置 → 深色主题 → 写操作确认 → 移动端（队列/限流由后端与 pytest 验证）
 
-详见 [docs/TESTING.md](docs/TESTING.md)。
+详见 [docs/TESTING.md](docs/TESTING.md) 与 [V3.2 升级报告](docs/V3.2_PRODUCT_UPGRADE.md)。
 
 ## 部署
 
@@ -220,5 +222,6 @@ PaperLens 明确区分“已实现”和“需要外部条件”：
 - [P7 实施报告](docs/V3.1_P7_REPORT.md)
 - [P8 实施报告](docs/V3.1_P8_REPORT.md)
 - [P9 实施报告](docs/V3.1_P9_REPORT.md)
+- [V3.2 产品升级报告](docs/V3.2_PRODUCT_UPGRADE.md)
 - [部署报告](docs/DEPLOYMENT_REPORT.md)
 - [安全说明](docs/SECURITY.md)

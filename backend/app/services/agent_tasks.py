@@ -6,12 +6,18 @@ steps and tools *before* execution so the user can inspect or adjust them.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import re
 from typing import AsyncIterator
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import AgentStep, AgentTask, Paper, User, utcnow
+from ..db import SessionLocal
+from ..models import AgentRun, AgentStep, AgentTask, Paper, User, utcnow
+
+logger = logging.getLogger("paperlens.agent_tasks")
 from .tools import TOOL_SPECS
 
 ALLOWED_TOOLS = {spec["function"]["name"] for spec in TOOL_SPECS} | {"research_intelligence"}
@@ -88,6 +94,7 @@ def create_task(
     scope_ids: list[str],
     conversation_id: str | None = None,
     plan: list[dict] | None = None,
+    plan_source: str = "local",
     status: str = "queued",
     plan_confirmed: bool = False,
     rerun_of: str | None = None,
@@ -101,6 +108,7 @@ def create_task(
         scope_ids=scope_ids,
         status=status,
         plan=plan or [],
+        plan_source=plan_source,
         plan_confirmed=plan_confirmed,
         provider="local",
         rerun_of=rerun_of,
@@ -109,6 +117,65 @@ def create_task(
     db.commit()
     db.refresh(task)
     return task
+
+
+async def build_plan_with_model(
+    goal: str,
+    mode: str,
+    papers: list[Paper],
+    config: ModelConfig | None,
+) -> tuple[list[dict], str]:
+    """Ask the model for a bounded plan; fall back to the deterministic plan.
+
+    The model only sees paper titles and the goal, never full text. Tool names
+    are validated against the real tool belt, and the plan is capped at 5 steps.
+    """
+    fallback = build_plan(goal, mode, papers)
+    if config is None:
+        return fallback, "local"
+    titles = "\n".join(f"- {paper.title} ({paper.year or 'n.d.'})" for paper in papers[:12]) or "（资料库为空）"
+    prompt = (
+        "只输出 JSON，不要 Markdown。为科研任务生成 2-5 个可执行步骤。格式："
+        "{\"steps\":[{\"title\":\"\",\"tool\":\"retrieve_chunks\",\"description\":\"\","
+        "\"depends_on\":[\"s1\"]}]}。"
+        "工具只能从以下选择：" + ", ".join(sorted(ALLOWED_TOOLS)) + "。"
+        "没有证据的任务不要声称已经完成；最多 5 步；不要编造论文、数据或引用。"
+        "\n\n研究范围：\n" + titles + "\n\n任务：" + goal[:1500]
+    )
+    try:
+        response = await LLMClient(config).complete(
+            [{"role": "user", "content": prompt}], temperature=0.2, max_tokens=900
+        )
+        cleaned = (response.get("content") or "").strip()
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            return fallback, "local"
+        payload = json.loads(cleaned[start : end + 1])
+        raw_steps = payload.get("steps") if isinstance(payload, dict) else None
+        if not isinstance(raw_steps, list) or not raw_steps:
+            return fallback, "local"
+        steps = [_step("s1", "确认研究范围与目标", None, [], f"资料库内 {len(papers)} 篇论文；明确问题与边界。")]
+        for index, item in enumerate(raw_steps[:5], start=2):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()[:160]
+            tool = item.get("tool")
+            if not title or (tool and str(tool) not in ALLOWED_TOOLS):
+                continue
+            steps.append(
+                _step(
+                    f"s{index}",
+                    title,
+                    str(tool) if tool else None,
+                    [],
+                    str(item.get("description") or "")[:400],
+                )
+            )
+        steps.append(_step(f"s{len(steps) + 1}", "组织答案并标注证据", None, [steps[-1]["id"]], "只使用已检索证据；不足时明确说明。"))
+        steps.append(_step(f"s{len(steps) + 1}", "执行证据自检", None, [steps[-1]["id"]], "检查引用覆盖、失败步骤与证据边界。"))
+        return steps, "model"
+    except (LLMError, json.JSONDecodeError, ValueError):
+        return fallback, "local"
 
 
 def apply_plan_update(task: AgentTask, raw: list[dict]) -> list[dict]:
@@ -254,3 +321,34 @@ async def control_events(db: Session, task: AgentTask) -> AsyncIterator[dict]:
         if task.status == "running":
             yield {"type": "resumed", "task_id": task.id, "message": "任务已继续。"}
             return
+
+
+def recover_interrupted_tasks() -> int:
+    """Mark tasks left running/paused by a previous process as interrupted.
+
+    Task execution is bound to an HTTP stream. After a process restart there is
+    no stream to resume, so leaving these rows as running would make the task
+    center lie forever. Queued tasks are intentionally left untouched because
+    the user can still execute them explicitly.
+    """
+    with SessionLocal() as db:
+        rows = list(
+            db.execute(
+                select(AgentTask).where(AgentTask.status.in_(["running", "paused"]))
+            ).scalars().all()
+        )
+        for task in rows:
+            task.status = "failed"
+            task.error = "服务重启导致任务执行中断，请重新执行。"
+            task.finished_at = utcnow()
+            task.updated_at = utcnow()
+            if task.run_id:
+                run = db.get(AgentRun, task.run_id)
+                if run is not None and run.status in {"running", "paused"}:
+                    run.status = "failed"
+                    run.error = "服务重启导致任务执行中断"
+                    run.finished_at = utcnow()
+        if rows:
+            db.commit()
+            logger.warning("Recovered %s interrupted agent task(s)", len(rows))
+        return len(rows)

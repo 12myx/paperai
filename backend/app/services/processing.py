@@ -6,6 +6,7 @@ from typing import Callable
 
 from sqlalchemy import delete
 
+from ..config import settings
 from ..db import SessionLocal
 from ..models import Chunk, Figure, Paper, PaperPage, Section, UsageEvent, utcnow
 from .chunking import build_chunks
@@ -14,6 +15,10 @@ from .rag import invalidate_paper
 from .storage import storage
 
 logger = logging.getLogger("paperlens.processing")
+
+
+class PermanentProcessingError(Exception):
+    """A document that cannot succeed by retrying the same bytes (e.g. scanned PDF)."""
 
 
 def process_paper(
@@ -41,7 +46,7 @@ def process_paper(
 
         path = storage.abs_path(paper.stored_path)
         data = path.read_bytes()
-        parsed = extract_pdf(data, max_pages=400)
+        parsed = extract_pdf(data, max_pages=settings.max_pdf_pages)
         report("解析版面与章节", 35)
 
         db.execute(delete(Chunk).where(Chunk.paper_id == paper.id))
@@ -81,6 +86,8 @@ def process_paper(
         db.flush()
 
         chunks = build_chunks(parsed)
+        if not chunks:
+            raise PermanentProcessingError("PDF 中未提取到可检索文本，可能是扫描版或图片型 PDF；请先进行 OCR 或上传文本版。")
         report("构建章节感知切片", 65)
         for chunk in chunks:
             section = section_records.get(chunk["section_order"])

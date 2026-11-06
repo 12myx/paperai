@@ -5,7 +5,9 @@ import json
 import uuid
 
 from app.db import SessionLocal
-from app.models import AgentTask
+from app.models import AgentTask, User
+from app.services.agent_tasks import recover_interrupted_tasks
+from app.services.tools import ToolError, ToolRunner
 
 
 def _events(text: str) -> list[dict]:
@@ -125,3 +127,39 @@ def test_task_listing(client, auth, paper, paper_b):
     assert listing.status_code == 200
     assert listing.json()["items"]
     assert all("plan" in item for item in listing.json()["items"])
+
+
+def test_interrupted_task_is_marked_failed_on_recovery(client, auth):
+    with SessionLocal() as db:
+        task = AgentTask(
+            user_id=auth["user"]["id"],
+            goal="重启恢复测试",
+            status="running",
+            plan=[],
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        task_id = task.id
+    recovered = recover_interrupted_tasks()
+    assert recovered >= 1
+    with SessionLocal() as db:
+        task = db.get(AgentTask, task_id)
+        assert task is not None
+        assert task.status == "failed"
+        assert "重启" in (task.error or "")
+        db.delete(task)
+        db.commit()
+
+
+def test_tool_runner_rejects_paper_outside_scope(client, auth, paper, paper_b):
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == auth["user"]["email"]).one()
+        runner = ToolRunner(db, user, None, scope_ids=[paper["id"]])
+        assert runner._paper(paper["id"]).id == paper["id"]
+        try:
+            runner._paper(paper_b["id"])
+        except ToolError as exc:
+            assert "范围" in str(exc)
+        else:
+            raise AssertionError("out-of-scope paper should be rejected")

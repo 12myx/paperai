@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -13,6 +13,7 @@ from ..schemas import AgentTaskPlanRequest, AgentTaskPlanUpdate, ChatStreamReque
 from ..serializers import conversation_out, message_out, run_out, step_out, task_out
 from ..services.agent import ChatRequest, confirm_action, resolve_scope, stream_chat
 from ..services import agent_tasks
+from ..services.llm import resolve_model_config
 
 router = APIRouter(tags=["chat"])
 
@@ -135,7 +136,7 @@ async def confirm(payload: ConfirmActionRequest, user: User = Depends(get_curren
     return {"result": result}
 
 @router.post("/agent/tasks/plan")
-def plan_task(
+async def plan_task(
     payload: AgentTaskPlanRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -160,7 +161,9 @@ def plan_task(
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
-    plan = agent_tasks.build_plan(message, payload.mode, papers)
+    plan, plan_source = await agent_tasks.build_plan_with_model(
+        message, payload.mode, papers, resolve_model_config(db, user)
+    )
     task = agent_tasks.create_task(
         db,
         user,
@@ -170,6 +173,7 @@ def plan_task(
         scope_ids=list(payload.scope_ids or []),
         conversation_id=conversation.id,
         plan=plan,
+        plan_source=plan_source,
         status="queued",
         plan_confirmed=False,
     )
@@ -248,6 +252,14 @@ def execute_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在或无权访问")
     if task.status != "queued":
         raise HTTPException(status.HTTP_409_CONFLICT, f"任务当前状态为 {task.status}，不能开始执行")
+    claimed = db.execute(
+        update(AgentTask)
+        .where(AgentTask.id == task_id, AgentTask.user_id == user.id, AgentTask.status == "queued")
+        .values(status="running", updated_at=utcnow())
+    )
+    db.commit()
+    if claimed.rowcount != 1:
+        raise HTTPException(status.HTTP_409_CONFLICT, "任务已被其他执行器接管或状态已变化")
     request = ChatRequest(
         message=task.goal,
         conversation_id=task.conversation_id,
@@ -304,12 +316,14 @@ def cancel_task(task_id: str, user: User = Depends(get_current_user), db: Sessio
 
 
 @router.post("/agent/tasks/{task_id}/rerun")
-def rerun_task(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+async def rerun_task(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     task = db.get(AgentTask, task_id)
     if task is None or task.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在或无权访问")
     papers = resolve_scope(db, user, task.scope_type, list(task.scope_ids or []))
-    plan = agent_tasks.build_plan(task.goal, task.mode, papers)
+    plan, plan_source = await agent_tasks.build_plan_with_model(
+        task.goal, task.mode, papers, resolve_model_config(db, user)
+    )
     new_task = agent_tasks.create_task(
         db,
         user,
@@ -319,6 +333,7 @@ def rerun_task(task_id: str, user: User = Depends(get_current_user), db: Session
         scope_ids=list(task.scope_ids or []),
         conversation_id=task.conversation_id,
         plan=plan,
+        plan_source=plan_source,
         status="queued",
         plan_confirmed=False,
         rerun_of=task.id,

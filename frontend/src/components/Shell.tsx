@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import type { KnowledgeItem, Paper, Project } from "../lib/types";
 import {
   BookMarked,
   ChevronUp,
@@ -12,6 +13,8 @@ import {
   LogOut,
   Menu,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   ListChecks,
   Plus,
   Radar,
@@ -26,7 +29,7 @@ import {
 import { useApp } from "../store/AppContext";
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
-import { Avatar, IconButton } from "./ui";
+import { Avatar, IconButton, Input, Modal } from "./ui";
 import { Onboarding } from "./Onboarding";
 
 const NAV = [
@@ -63,6 +66,13 @@ export function Shell() {
   const { user, settings, model, logout, setTheme } = useApp();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("paperlens.sidebar") === "collapsed");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<{ papers: Paper[]; knowledge: KnowledgeItem[]; projects: Project[] }>({
+    papers: [], knowledge: [], projects: [],
+  });
   const [usage, setUsage] = useState<{ papers: number; pages: number; conversations?: number } | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -80,7 +90,7 @@ export function Shell() {
         (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable);
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        navigate("/app/papers?focus=search");
+        setSearchOpen(true);
         return;
       }
       if (!typing && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "n") {
@@ -93,6 +103,45 @@ export function Shell() {
   }, [navigate]);
 
   useEffect(() => {
+    if (!searchOpen || !searchQuery.trim()) {
+      setSearchResults({ papers: [], knowledge: [], projects: [] });
+      setSearching(false);
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      setSearching(true);
+      const needle = searchQuery.trim();
+      Promise.all([
+        api<{ items: Paper[] }>("/papers?limit=6&query=" + encodeURIComponent(needle)),
+        api<{ items: KnowledgeItem[] }>("/knowledge?limit=6&query=" + encodeURIComponent(needle)),
+        api<{ items: Project[] }>("/projects"),
+      ])
+        .then(([paperResponse, knowledgeResponse, projectResponse]) => {
+          if (!active) return;
+          const lowered = needle.toLowerCase();
+          setSearchResults({
+            papers: paperResponse.items,
+            knowledge: knowledgeResponse.items,
+            projects: projectResponse.items.filter((project) =>
+              (project.name + " " + (project.description || "") + " " + (project.goal || "")).toLowerCase().includes(lowered),
+            ).slice(0, 6),
+          });
+        })
+        .catch(() => {
+          if (active) setSearchResults({ papers: [], knowledge: [], projects: [] });
+        })
+        .finally(() => {
+          if (active) setSearching(false);
+        });
+    }, 260);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [searchOpen, searchQuery]);
+
+  useEffect(() => {
     api<{ papers: number; pages: number }>("/settings/usage")
       .then(setUsage)
       .catch(() => setUsage(null));
@@ -103,8 +152,16 @@ export function Shell() {
     (location.pathname.startsWith("/app/papers/") ? "论文精读" : location.pathname.startsWith("/app/projects/") ? "研究项目" : "PaperLens");
   const dark = document.documentElement.dataset.theme === "dark";
 
+  function toggleSidebar() {
+    setCollapsed((current) => {
+      const next = !current;
+      localStorage.setItem("paperlens.sidebar", next ? "collapsed" : "expanded");
+      return next;
+    });
+  }
+
   return (
-    <div className="app-shell">
+    <div className={cn("app-shell", collapsed && "sidebar-collapsed")}>
       <aside className={cn("sidebar", mobileOpen && "sidebar-open")}>
         <div className="sidebar-top">
           <NavLink to="/app" className="brand">
@@ -114,6 +171,13 @@ export function Shell() {
               <small>知研 AI</small>
             </span>
           </NavLink>
+          <IconButton
+            label={collapsed ? "展开导航" : "收起导航"}
+            className="sidebar-collapse"
+            onClick={toggleSidebar}
+          >
+            {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          </IconButton>
           <IconButton label="关闭导航" className="sidebar-close" onClick={() => setMobileOpen(false)}>
             <X size={18} />
           </IconButton>
@@ -121,7 +185,7 @@ export function Shell() {
 
         <button className="new-research" onClick={() => navigate("/app?new=1")}>
           <Plus size={16} />
-          新建研究
+          <span>新建研究</span>
           <kbd>N</kbd>
         </button>
 
@@ -132,6 +196,7 @@ export function Shell() {
               to={item.to}
               end={item.end}
               className={({ isActive }) => cn("nav-item", isActive && "nav-active")}
+              title={item.label}
             >
               <item.icon size={17} strokeWidth={1.8} />
               <span>{item.label}</span>
@@ -208,7 +273,7 @@ export function Shell() {
             </div>
           </div>
           <div className="topbar-right">
-            <button className="search-trigger" onClick={() => navigate("/app/papers")}>
+            <button className="search-trigger" onClick={() => setSearchOpen(true)}>
               <Search size={15} />
               <span>搜索论文、知识、项目</span>
               <kbd>⌘K</kbd>
@@ -227,6 +292,84 @@ export function Shell() {
           <Outlet />
         </main>
       </div>
+
+      <Modal
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        title="全局搜索"
+        subtitle="论文、个人知识、研究项目"
+        size="lg"
+        footer={<span className="muted small">Enter 打开 · Esc 关闭</span>}
+      >
+        <div className="command-search">
+          <Input
+            autoFocus
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              const paper = searchResults.papers[0];
+              const knowledge = searchResults.knowledge[0];
+              const project = searchResults.projects[0];
+              if (paper) {
+                setSearchOpen(false);
+                navigate("/app/papers/" + paper.id);
+              } else if (knowledge) {
+                setSearchOpen(false);
+                navigate("/app/knowledge");
+              } else if (project) {
+                setSearchOpen(false);
+                navigate("/app/projects");
+              }
+            }}
+            placeholder="输入论文标题、知识内容或项目名称…"
+          />
+          {searching && <p className="muted small">搜索中…</p>}
+          {!searching && searchQuery.trim() && (
+            <div className="command-results">
+              {searchResults.papers.length > 0 && (
+                <div className="command-group">
+                  <span className="command-label">论文</span>
+                  {searchResults.papers.map((paper) => (
+                    <button key={paper.id} onClick={() => { setSearchOpen(false); navigate("/app/papers/" + paper.id); }}>
+                      <BookMarked size={14} />
+                      <span>{paper.title}</span>
+                      <em>{paper.year || "n.d."}</em>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {searchResults.knowledge.length > 0 && (
+                <div className="command-group">
+                  <span className="command-label">知识</span>
+                  {searchResults.knowledge.map((item) => (
+                    <button key={item.id} onClick={() => { setSearchOpen(false); navigate("/app/knowledge"); }}>
+                      <BookMarked size={14} />
+                      <span>{item.title}</span>
+                      <em>{item.kind}</em>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {searchResults.projects.length > 0 && (
+                <div className="command-group">
+                  <span className="command-label">项目</span>
+                  {searchResults.projects.map((project) => (
+                    <button key={project.id} onClick={() => { setSearchOpen(false); navigate("/app/projects"); }}>
+                      <FolderKanban size={14} />
+                      <span>{project.name}</span>
+                      <em>{project.progress}%</em>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {searchResults.papers.length + searchResults.knowledge.length + searchResults.projects.length === 0 && (
+                <p className="muted small">没有匹配结果。</p>
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
 
       {settings && !settings.onboarding_completed && <Onboarding />}
     </div>

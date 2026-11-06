@@ -43,17 +43,15 @@ function shouldPlan(message: string, mode: string): boolean {
 export function useChat({
   mode,
   scope,
-  initialConversationId,
   onConversation,
 }: {
   mode: string;
   scope: ScopeSelection;
-  initialConversationId?: string | null;
   onConversation?: (id: string) => void;
 }) {
   const { toast } = useApp();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [conversationId, setConversationId] = useState<string | null>(initialConversationId || null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [paused, setPaused] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
