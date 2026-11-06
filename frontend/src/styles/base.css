@@ -747,3 +747,20 @@ kbd {
 .command-group button:hover { background: var(--surface-3); color: var(--ink); }
 .command-group button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .command-group button em { font-style: normal; font-size: 10px; color: var(--faint); }
+
+/* Multi-file upload queue */
+.uploader.uploader-batch-mode { display: block; cursor: default; }
+.upload-batch { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.upload-batch-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted); }
+.upload-batch-head > span:first-child { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-weight: 600; }
+.upload-item { display: flex; flex-direction: column; gap: 4px; padding: 7px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+.upload-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.8px; }
+.upload-item-name { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.upload-item-head strong { font-size: 10px; color: var(--faint); font-weight: 550; white-space: nowrap; }
+.upload-item-track { height: 3px; overflow: hidden; border-radius: 99px; background: var(--surface-3); }
+.upload-item-track span { display: block; height: 100%; border-radius: 99px; background: var(--accent); transition: width .25s; }
+.upload-item-meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 9.5px; color: var(--faint); }
+.upload-item-error { color: var(--danger); }
+.upload-item-done .upload-item-track span { background: var(--success, #4c8a70); }
+.upload-item-error .upload-item-track span, .upload-item-duplicate .upload-item-track span { background: var(--danger); }
+.uploader-compact .upload-batch { max-height: 190px; overflow: auto; }

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, CloudUpload, FileUp, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CloudUpload, FileText, FileUp, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useApp } from "../store/AppContext";
 import { ApiError, authHeaders, getToken } from "../lib/api";
@@ -7,7 +7,16 @@ import { formatBytes } from "../lib/utils";
 import { Button, Modal } from "./ui";
 import type { Paper } from "../lib/types";
 
-type Phase = "idle" | "uploading" | "parsing" | "done" | "error";
+type Phase = "waiting" | "uploading" | "parsing" | "done" | "error" | "duplicate";
+
+interface UploadItem {
+  id: string;
+  file: File;
+  phase: Phase;
+  progress: number;
+  paper?: Paper;
+  error?: string;
+}
 
 export interface UploadState {
   phase: Phase;
@@ -55,174 +64,245 @@ function uploadWithProgress(
 }
 
 async function waitForReady(paperId: string, onTick: (paper: Paper) => void): Promise<Paper> {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  // The backend queue is intentionally serial. Allow enough time for several
+  // large PDFs without falsely reporting a timeout in the multi-upload flow.
+  for (let attempt = 0; attempt < 400; attempt += 1) {
     const response = await fetch("/api/papers/" + paperId, { headers: authHeaders() });
     if (response.ok) {
       const paper = (await response.json()) as Paper;
       onTick(paper);
       if (paper.status === "ready" || paper.status === "failed") return paper;
     }
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await new Promise((resolve) => setTimeout(resolve, 750));
   }
   throw new Error("解析超时，请稍后在论文库中查看处理状态");
+}
+
+async function mapLimit<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor];
+      cursor += 1;
+      await worker(item);
+    }
+  });
+  await Promise.all(runners);
 }
 
 export function Uploader({
   collectionId,
   onUploaded,
+  onBatchUploaded,
   compact = false,
   autoNavigate = false,
 }: {
   collectionId?: string;
   onUploaded?: (paper: Paper) => void;
+  onBatchUploaded?: (papers: Paper[]) => void;
   compact?: boolean;
   autoNavigate?: boolean;
 }) {
   const { toast } = useApp();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [state, setState] = useState<UploadState>({ phase: "idle", progress: 0 });
+  const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
   const [duplicate, setDuplicate] = useState<{ file: File; title: string } | null>(null);
+  const busy = items.some((item) => ["waiting", "uploading", "parsing"].includes(item.phase));
+  const allDone = items.length > 0 && !busy;
 
-  async function start(file: File, allowDuplicate = false) {
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      toast("仅支持 PDF 文件", "error");
-      return;
-    }
-    if (file.size > 50 * 1024 * 1024) {
-      toast("文件超过 50MB 限制", "error");
-      return;
-    }
-    setState({ phase: "uploading", progress: 0, filename: file.name });
-    try {
-      const result = await uploadWithProgress(
-        file,
-        { collectionId, allowDuplicate },
-        (percent) => setState((current) => ({ ...current, progress: percent })),
-      );
-      setState({ phase: "parsing", progress: 100, filename: file.name, paper: result.paper });
-      const paper = await waitForReady(result.paper.id, (tick) =>
-        setState((current) => ({ ...current, paper: tick })),
-      );
-      if (paper.status === "failed") {
-        setState({ phase: "error", progress: 100, filename: file.name, paper, error: paper.error || "解析失败" });
-        toast("论文解析失败", "error", paper.error || undefined);
-        return;
+  function updateItem(id: string, patch: Partial<UploadItem>) {
+    setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }
+
+  async function start(files: File[], allowDuplicate = false) {
+    if (busy) return;
+    const valid = files.filter((file) => {
+      if (!file.name.toLowerCase().endsWith(".pdf")) {
+        toast("已跳过非 PDF 文件：" + file.name, "error");
+        return false;
       }
-      setState({ phase: "done", progress: 100, filename: file.name, paper });
-      onUploaded?.(paper);
-      toast("论文已解析完成", "success", paper.title.slice(0, 40));
-      if (autoNavigate) navigate("/app/papers/" + paper.id);
-    } catch (error) {
-      const apiError = error as ApiError;
-      if (apiError.status === 409) {
-        setDuplicate({ file, title: (apiError.detail as { title?: string })?.title || file.name });
-        setState({ phase: "idle", progress: 0 });
-        return;
+      if (file.size > 50 * 1024 * 1024) {
+        toast("已跳过超过 50MB 的文件：" + file.name, "error");
+        return false;
       }
-      setState({ phase: "error", progress: 0, filename: file.name, error: apiError.message || "上传失败" });
-      toast(apiError.message || "上传失败", "error");
+      return true;
+    });
+    if (!valid.length) return;
+    const batch: UploadItem[] = valid.map((file, index) => ({
+      id: Date.now().toString(36) + "-" + index + "-" + Math.random().toString(36).slice(2, 6),
+      file,
+      phase: "waiting",
+      progress: 0,
+    }));
+    setItems(batch);
+    setDuplicate(null);
+    const completed: Paper[] = [];
+    let duplicateItem: { file: File; title: string } | null = null;
+    let failedCount = 0;
+    const single = valid.length === 1;
+
+    await mapLimit(batch, 2, async (item) => {
+      updateItem(item.id, { phase: "uploading", progress: 0, error: undefined });
+      try {
+        const result = await uploadWithProgress(
+          item.file,
+          { collectionId, allowDuplicate },
+          (percent) => updateItem(item.id, { progress: percent }),
+        );
+        updateItem(item.id, { phase: "parsing", progress: 100, paper: result.paper });
+        const paper = await waitForReady(result.paper.id, (tick) => updateItem(item.id, { paper: tick }));
+        if (paper.status === "failed") {
+          const error = paper.error || "解析失败";
+          updateItem(item.id, { phase: "error", error });
+          return;
+        }
+        updateItem(item.id, { phase: "done", paper });
+        completed.push(paper);
+      } catch (error) {
+        const apiError = error as ApiError;
+        if (apiError.status === 409) {
+          const title = (apiError.detail as { title?: string })?.title || item.file.name;
+          if (single) duplicateItem = { file: item.file, title };
+          updateItem(item.id, {
+            phase: "duplicate",
+            error: single ? "资料库中已存在" : "资料库中已存在，已跳过",
+          });
+          failedCount += 1;
+          return;
+        }
+        const message = apiError.message || "上传失败";
+        failedCount += 1;
+        updateItem(item.id, { phase: "error", error: message });
+      }
+    });
+
+    if (completed.length) {
+      if (onBatchUploaded) onBatchUploaded(completed);
+      else onUploaded?.(completed[completed.length - 1]);
+      toast(
+        completed.length + " 篇论文已解析完成" + (duplicateItem ? "；有重复文件待确认" : ""),
+        "success",
+        completed.map((paper) => paper.title).slice(0, 2).join("、"),
+      );
+      if (autoNavigate) {
+        if (completed.length === 1) navigate("/app/papers/" + completed[0].id);
+        else navigate("/app/papers");
+      }
+    } else if (duplicateItem) {
+      // Modal below offers "仍然上传"; the batch itself made no changes.
+    } else {
+      if (failedCount) toast(failedCount + " 个文件上传、解析失败或重复", "error");
     }
+    if (duplicateItem) setDuplicate(duplicateItem);
+  }
+
+  function chooseFiles(fileList: FileList | null) {
+    if (!fileList?.length) return;
+    void start(Array.from(fileList));
   }
 
   return (
     <div className="uploader-wrap">
       <div
-        className={"uploader " + (compact ? "uploader-compact " : "") + (dragging ? "uploader-drag" : "")}
+        className={"uploader " + (compact ? "uploader-compact " : "") + (dragging ? "uploader-drag" : "") + (items.length ? " uploader-batch-mode" : "")}
         onDragOver={(event) => {
           event.preventDefault();
-          setDragging(true);
+          if (!busy) setDragging(true);
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={(event) => {
           event.preventDefault();
           setDragging(false);
-          const file = event.dataTransfer.files?.[0];
-          if (file) void start(file);
+          if (!busy) void start(Array.from(event.dataTransfer.files || []));
         }}
-        onClick={() => state.phase === "idle" && inputRef.current?.click()}
+        onClick={() => {
+          if (!items.length) inputRef.current?.click();
+        }}
         role="button"
         tabIndex={0}
-        onKeyDown={(event) => event.key === "Enter" && inputRef.current?.click()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !items.length) inputRef.current?.click();
+        }}
       >
         <input
           ref={inputRef}
           type="file"
           accept="application/pdf,.pdf"
+          multiple
           hidden
           onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void start(file);
+            chooseFiles(event.target.files);
             event.target.value = "";
           }}
         />
-        {state.phase === "idle" && (
+        {items.length === 0 && (
           <>
             <span className="upload-icon">
               <CloudUpload size={compact ? 20 : 24} />
             </span>
             <div>
               <strong>{compact ? "上传 PDF 论文" : "拖入 PDF，或点击选择文件"}</strong>
-              <p>支持 50MB 以内的学术论文，解析后自动建立可检索的知识切片</p>
+              <p>支持一次选择多份 50MB 以内的学术论文，系统会按队列依次解析</p>
             </div>
           </>
         )}
-        {state.phase === "uploading" && (
-          <div className="upload-progress">
-            <div className="upload-file">
-              <FileUp size={17} />
-              <span>{state.filename}</span>
-              <strong>{state.progress}%</strong>
+        {items.length > 0 && (
+          <div className="upload-batch">
+            <div className="upload-batch-head">
+              <span>
+                {busy ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+                {busy ? "正在处理 " + items.length + " 份论文" : "本批次 " + items.length + " 份论文"}
+              </span>
+              <span>后端队列串行解析</span>
             </div>
-            <div className="progress">
-              <span className="progress-fill" style={{ width: state.progress + "%" }} />
-            </div>
+            {items.map((item) => (
+              <div key={item.id} className={"upload-item upload-item-" + item.phase}>
+                <div className="upload-item-head">
+                  <span className="upload-item-name">
+                    <FileText size={13} />
+                    {item.file.name}
+                  </span>
+                  <strong>
+                    {item.phase === "done"
+                      ? "完成"
+                      : item.phase === "error"
+                        ? "失败"
+                        : item.phase === "duplicate"
+                          ? "重复"
+                          : item.phase === "parsing"
+                            ? "解析中"
+                            : item.phase === "uploading"
+                              ? item.progress + "%"
+                              : "等待"}
+                  </strong>
+                </div>
+                <div className="upload-item-track">
+                  <span style={{ width: (item.phase === "done" ? 100 : item.progress) + "%" }} />
+                </div>
+                <div className="upload-item-meta">
+                  <span>{formatBytes(item.file.size)}</span>
+                  {item.paper?.page_count ? <span>{item.paper.page_count} 页</span> : null}
+                  {item.error ? <span className="upload-item-error">{item.error}</span> : null}
+                </div>
+              </div>
+            ))}
+            {allDone && (
+              <div className="upload-actions">
+                {items.some((item) => item.paper) && (
+                  <Button size="sm" variant="primary" onClick={(event) => { event.stopPropagation(); navigate("/app/papers"); }}>
+                    查看资料库
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={(event) => { event.stopPropagation(); setItems([]); }}>
+                  继续上传
+                </Button>
+              </div>
+            )}
           </div>
         )}
-        {state.phase === "parsing" && (
-          <div className="upload-progress">
-            <div className="upload-file">
-              <Loader2 size={17} className="spin" />
-              <span>正在解析 {state.filename}</span>
-              <strong>{formatBytes(state.paper?.size_bytes)}</strong>
-            </div>
-            <p className="muted small">提取章节、段落、图表与页码坐标…</p>
-          </div>
-        )}
-        {state.phase === "done" && state.paper && (
-          <div className="upload-progress">
-            <div className="upload-file">
-              <CheckCircle2 size={17} className="text-success" />
-              <span>{state.paper.title}</span>
-            </div>
-            <p className="muted small">
-              {state.paper.page_count} 页 · {state.paper.chunks_count ?? 0} 个切片 ·{" "}
-              {state.paper.sections?.length ?? 0} 个章节
-            </p>
-            <div className="upload-actions">
-              <Button size="sm" variant="primary" onClick={(event) => { event.stopPropagation(); navigate("/app/papers/" + state.paper!.id); }}>
-                开始阅读
-              </Button>
-              <Button size="sm" variant="ghost" onClick={(event) => { event.stopPropagation(); setState({ phase: "idle", progress: 0 }); }}>
-                继续上传
-              </Button>
-            </div>
-          </div>
-        )}
-        {state.phase === "error" && (
-          <div className="upload-progress">
-            <div className="upload-file">
-              <AlertTriangle size={17} className="text-danger" />
-              <span>{state.error}</span>
-            </div>
-            <div className="upload-actions">
-              <Button size="sm" onClick={(event) => { event.stopPropagation(); setState({ phase: "idle", progress: 0 }); }}>
-                重试
-              </Button>
-            </div>
-          </div>
-        )}
+        {items.length === 0 && dragging && <div className="upload-drop-hint"><FileUp size={16} /> 松开以添加多份 PDF</div>}
       </div>
 
       <Modal
@@ -232,15 +312,13 @@ export function Uploader({
         size="sm"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setDuplicate(null)}>
-              取消
-            </Button>
+            <Button variant="ghost" onClick={() => setDuplicate(null)}>取消</Button>
             <Button
               variant="primary"
               onClick={() => {
                 const pending = duplicate;
                 setDuplicate(null);
-                if (pending) void start(pending.file, true);
+                if (pending) void start([pending.file], true);
               }}
             >
               仍然上传
@@ -249,16 +327,9 @@ export function Uploader({
         }
       >
         <p className="muted">
-          《{duplicate?.title}》已存在。重复上传会创建独立副本并重新解析，通常没有必要。你也可以直接打开已有论文继续阅读。
+          《{duplicate?.title}》已存在。重复上传会创建独立副本并重新解析。
         </p>
-        <Button
-          variant="soft"
-          size="sm"
-          onClick={() => {
-            setDuplicate(null);
-            navigate("/app/papers");
-          }}
-        >
+        <Button variant="soft" size="sm" onClick={() => { setDuplicate(null); navigate("/app/papers"); }}>
           去论文库查看
         </Button>
       </Modal>
