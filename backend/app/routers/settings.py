@@ -12,11 +12,11 @@ from ..config import settings as app_settings
 from ..db import get_db
 from ..deps import get_current_user, get_user_settings
 from ..models import (
-    AcademicArtifact, AgentRun, AgentTask, Annotation, ArtifactQualityReport, Chunk,
+    AcademicArtifact, ActionRequest, AgentRun, AgentTask, Annotation, ArtifactQualityReport, Chunk,
     Collection, CollectionPaper, Conversation, Evidence, ExportRecord, Figure,
     IntelligenceReport, KnowledgeItem, KnowledgeLink, KnowledgeMeta, KnowledgeVersion,
     Message, Paper, PaperFacet, PaperPage, ProcessingJob, Project, ProjectItem,
-    ResearchAnalysis, ResearchInsight, Section, UsageEvent, User, UserSettings, utcnow,
+    ResearchAnalysis, ResearchInsight, ResourceUsage, Section, UsageEvent, User, UserSettings, utcnow,
 )
 from ..schemas import AccountDeleteRequest, ModelKeyRequest, SettingsUpdate
 from ..security import encrypt_secret, verify_password
@@ -180,6 +180,8 @@ def delete_account(payload: AccountDeleteRequest, user: User = Depends(get_curre
         IntelligenceReport,
         KnowledgeVersion,
         KnowledgeMeta,
+        ActionRequest,
+        ResourceUsage,
         KnowledgeLink,
         KnowledgeItem,
         ProcessingJob,

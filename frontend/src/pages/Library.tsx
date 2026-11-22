@@ -20,6 +20,7 @@ import type { Collection, Paper, ProcessingJob } from "../lib/types";
 import { cn, formatBytes, relativeTime, truncate } from "../lib/utils";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, Field, IconButton, Input, Modal, Select, Skeleton } from "../components/ui";
 import { Uploader } from "../components/Uploader";
+import { notifyUsageChanged } from "../lib/events";
 
 export function Library() {
   const { toast } = useApp();
@@ -114,6 +115,7 @@ export function Library() {
     try {
       await api("/papers/" + toDelete.id + "?confirm=true", { method: "DELETE" });
       toast("论文已删除", "success");
+      notifyUsageChanged();
       setToDelete(null);
       void refresh();
     } catch (error) {
@@ -181,7 +183,7 @@ export function Library() {
         <div className="library-upload">
           <Uploader
             collectionId={collectionId || undefined}
-            onUploaded={() => void refresh()}
+            onBatchUploaded={() => void refresh()}
           />
         </div>
       )}
@@ -312,7 +314,7 @@ export function Library() {
                           <button onClick={() => { setAddTarget(paper); setMenuFor(null); }}>
                             <FolderPlus size={14} /> 加入合集
                           </button>
-                          <button onClick={() => { void api("/papers/" + paper.id + "/reprocess", { method: "POST" }).then(() => { toast("已重新排队解析", "info"); void refresh(); }); setMenuFor(null); }}>
+                          <button onClick={() => { void api("/papers/" + paper.id + "/reprocess", { method: "POST" }).then(() => { toast("已重新排队解析", "info"); notifyUsageChanged(); void refresh(); }); setMenuFor(null); }}>
                             <Clock size={14} /> 重新解析
                           </button>
                           <button className="danger-text" onClick={() => { setToDelete(paper); setMenuFor(null); }}>

@@ -15,11 +15,7 @@ from ..models import Chunk, Paper
 from .llm import LLMClient, LLMError, ModelConfig, system_prompt
 from .rag import format_citations, search
 
-LOCAL_BANNER = (
-    "> **本地抽取模式**：当前未配置生成式模型（DeepSeek API Key），"
-    "以下内容由真实检索到的论文原文片段抽取、排序和归纳而成，不包含模型生成或推断。"
-    "在「设置 → AI 模型」配置密钥后可获得生成式分析与翻译。\n\n"
-)
+LOCAL_BANNER = "> 本地抽取 · 未配置生成式模型；以下内容仅来自原文，不是生成或推断。\n\n"
 
 SUMMARY_MODES = {
     "one_line": "用一句话（不超过 80 字）概括这篇论文的核心贡献",
@@ -170,7 +166,7 @@ def extractive_summary(db: Session, paper: Paper, mode: str) -> tuple[str, list[
             for sentence in pick_sentences(chunk.text, title, 1):
                 lines.append(f"- {sentence} {cite(chunk, sentence)}")
         lines.append("")
-    lines.append("\n> 本地模式按章节抽取原文要点；完整语义归纳需要配置生成式模型。")
+    lines.append("\n> 本地模式：仅列章节原文要点。")
     return "\n".join(lines), citations
 
 
@@ -209,10 +205,31 @@ async def translate_text(config: ModelConfig | None, text: str, target: str, sty
     return response["content"].strip()
 
 
+COMPARE_DIMENSIONS = [
+    ("研究方法", ("method",), ("研究方法", "方法")),
+    ("实验设计", ("experiment", "result"), ("实验设计", "实验设置", "实验")),
+    ("创新点", ("innovation", "contribution", "conclusion", "abstract"), ("创新点", "创新")),
+    ("局限性", ("limitation", "conclusion", "discussion"), ("局限性", "局限")),
+    ("研究结论", ("conclusion", "abstract"), ("研究结论", "主要结论", "结论")),
+    ("可复现性", ("method", "experiment", "reproducibility"), ("可复现性", "复现")),
+]
+
+
+def _compare_aspects(focus: str) -> list[tuple[str, tuple[str, ...]]]:
+    value = focus or ""
+    selected = [(label, tags) for label, tags, aliases in COMPARE_DIMENSIONS if any(alias in value for alias in aliases)]
+    if selected:
+        return selected
+    custom = (focus or "").strip()
+    if custom:
+        return [(custom[:18], ())]
+    return [("研究问题", ("abstract", "introduction")), ("研究方法", ("method",)), ("实验设计", ("experiment", "result")), ("研究结论", ("conclusion",))]
+
+
 def local_compare(db: Session, papers: list[Paper], focus: str = "") -> tuple[str, list[dict]]:
     citations: list[dict] = []
     rows = []
-    aspects = [("研究问题", ("abstract", "introduction")), ("方法", ("method",)), ("实验", ("experiment", "result")), ("结论", ("conclusion",))]
+    aspects = _compare_aspects(focus)
     for paper in papers:
         chunks = db.execute(select(Chunk).where(Chunk.paper_id == paper.id).order_by(Chunk.order_index)).scalars().all()
         cells = []
@@ -251,7 +268,8 @@ def local_compare(db: Session, papers: list[Paper], focus: str = "") -> tuple[st
         lines.append(f"| {title} | " + " | ".join(c.replace("|", "/") for c in cells) + " |")
     lines.append("\n### 可复核的差异")
     for index, (paper, cells) in enumerate(rows):
-        lines.append(f"- **{paper.title[:80]}**：方法要点 — {cells[1][:220]}")
+        detail = next((cell for cell in cells if cell and cell != "—"), cells[0] if cells else "—")
+        lines.append(f"- **{paper.title[:80]}**：{aspects[0][0]} — {detail[:220]}")
     lines.append("\n> 本地模式仅罗列各论文对应章节的原文要点；跨论文的因果、优劣与共识判断需要生成式模型。")
     return "\n".join(lines), citations
 

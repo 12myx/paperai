@@ -91,6 +91,7 @@ export function Reader() {
   const [flashPage, setFlashPage] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Annotation | null>(null);
   const [savedSummary, setSavedSummary] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
@@ -350,6 +351,7 @@ export function Reader() {
   async function runSummary(mode: string) {
     setSummaryMode(mode);
     setSavedSummary(false);
+    setSummaryExpanded(false);
     setSummary({ content: "", citations: [], loading: true, local: false, error: null, label: SUMMARY_MODES.find((item) => item.id === mode)?.label || "总结" });
     try {
       const response = await api<{ content: string; citations: Citation[]; local: boolean; label: string; analysis_id?: string; evidence_count?: number }>(
@@ -364,6 +366,7 @@ export function Reader() {
 
   async function runAnalysis(kind: "critical" | "innovation" | "limitation" | "future") {
     setSavedSummary(false);
+    setSummaryExpanded(false);
     const labels = { critical: "批判性评估", innovation: "创新性分析", limitation: "局限性分析", future: "未来研究方向" };
     setSummary({ content: "", citations: [], loading: true, local: false, error: null, label: labels[kind] });
     try {
@@ -382,6 +385,7 @@ export function Reader() {
     if (!instruction || extracting) return;
     setExtracting(true);
     setSavedSummary(false);
+    setSummaryExpanded(false);
     setSummary({ content: "", citations: [], loading: true, local: false, error: null, label: "自定义提取" });
     try {
       const response = await api<{ content: string; citations: Citation[]; local: boolean; analysis_id?: string; evidence_count?: number }>("/papers/" + paperId + "/extract", {
@@ -757,13 +761,20 @@ export function Reader() {
                     <span>{summary.label}</span>
                     {summary.local && <Badge tone="warn">抽取模式</Badge>}
                   </div>
-                  <MarkdownView
-                    content={summary.content}
-                    onCite={(key) => {
-                      const citation = summary.citations.find((item) => item.key === key);
-                      if (citation) scrollToPage(citation.page);
-                    }}
-                  />
+                  <div className={cn("summary-output-body", summary.content.length > 500 && !summaryExpanded && "collapsed")}>
+                    <MarkdownView
+                      content={summary.content}
+                      onCite={(key) => {
+                        const citation = summary.citations.find((item) => item.key === key);
+                        if (citation) scrollToPage(citation.page);
+                      }}
+                    />
+                  </div>
+                  {summary.content.length > 500 && (
+                    <button className="summary-expand" onClick={() => setSummaryExpanded((value) => !value)}>
+                      {summaryExpanded ? "收起全文" : "展开全文"}
+                    </button>
+                  )}
                   <div className="summary-actions">
                     <Button size="sm" variant="ghost" icon={savedSummary ? <CheckIcon /> : <BookmarkPlus size={13} />} onClick={() => void saveSummaryToKnowledge()} disabled={savedSummary}>
                       {savedSummary ? "已保存" : "保存到知识库"}

@@ -11,10 +11,29 @@ from ..deps import get_current_user
 from ..models import Figure, Paper, User
 from ..schemas import FigureUpdate
 from ..serializers import figure_out
+from ..services.figure_classification import classify_user_figures
 from ..services.llm import LLMClient, LLMError, resolve_model_config
 from ..services.storage import storage
 
 router = APIRouter(prefix="/figures", tags=["figures"])
+
+
+def _view_matches(figure: Figure, view: str) -> bool:
+    if figure.ignored:
+        return False
+    if view == "featured":
+        return figure.detected_kind in {"figure", "table"} and not figure.is_page_snapshot and figure.quality_score >= 55
+    if view == "tables":
+        return figure.detected_kind == "table" or figure.kind == "table"
+    if view == "snapshots":
+        return figure.is_page_snapshot
+    if view == "pending":
+        return not figure.is_page_snapshot and (
+            figure.detected_kind == "unclassified" or figure.quality_score < 55
+        )
+    if view == "saved":
+        return figure.saved
+    return True
 
 
 @router.get("")
@@ -22,6 +41,8 @@ def list_figures(
     paper_id: str | None = None,
     saved: bool | None = None,
     kind: str | None = None,
+    view: str = Query("featured"),
+    include_ignored: bool = False,
     query: str = "",
     limit: int = Query(120, ge=1, le=400),
     user: User = Depends(get_current_user),
@@ -35,14 +56,34 @@ def list_figures(
     if kind:
         statement = statement.where(Figure.kind == kind)
     figures = list(db.execute(statement.order_by(Figure.paper_id, Figure.order_index).limit(limit)).scalars().all())
+    # P0: classify old rows lazily; no PDF reprocessing and no deletion.
+    if any(figure.detected_kind == "unclassified" for figure in figures):
+        classify_user_figures(db, user)
+        figures = list(db.execute(statement.order_by(Figure.paper_id, Figure.order_index).limit(limit)).scalars().all())
+    summary = {
+        "featured": sum(1 for figure in figures if _view_matches(figure, "featured")),
+        "tables": sum(1 for figure in figures if _view_matches(figure, "tables")),
+        "snapshots": sum(1 for figure in figures if _view_matches(figure, "snapshots")),
+        "pending": sum(1 for figure in figures if _view_matches(figure, "pending")),
+        "saved": sum(1 for figure in figures if _view_matches(figure, "saved")),
+    }
+    if view != "all":
+        figures = [figure for figure in figures if _view_matches(figure, view)]
+    elif not include_ignored:
+        figures = [figure for figure in figures if not figure.ignored]
     if query:
         needle = query.lower()
-        figures = [f for f in figures if needle in ((f.caption or "") + (f.note or "")).lower()]
+        figures = [figure for figure in figures if needle in ((figure.caption or "") + (figure.note or "")).lower()]
     titles = {
         paper.id: paper.title
         for paper in db.execute(select(Paper).where(Paper.user_id == user.id)).scalars().all()
     }
-    return {"items": [figure_out(f, titles.get(f.paper_id)) for f in figures]}
+    return {"items": [figure_out(figure, titles.get(figure.paper_id)) for figure in figures], "summary": summary}
+
+
+@router.post("/reclassify")
+def reclassify_figures(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    return {"result": classify_user_figures(db, user)}
 
 
 @router.get("/{figure_id}/image")
@@ -71,6 +112,16 @@ def update_figure(figure_id: str, payload: FigureUpdate, user: User = Depends(ge
         figure.note = payload.note[:4000]
     if payload.saved is not None:
         figure.saved = payload.saved
+        figure.visual_status = "recorded" if payload.saved else "unavailable"
+    if payload.ignored is not None:
+        figure.ignored = payload.ignored
+        figure.review_status = "rejected" if payload.ignored else "confirmed"
+    if payload.review_status in {"auto", "confirmed", "rejected"}:
+        figure.review_status = payload.review_status
+        if payload.review_status == "rejected":
+            figure.ignored = True
+        elif payload.review_status == "confirmed":
+            figure.ignored = False
     db.commit()
     paper = db.get(Paper, figure.paper_id)
     return {"figure": figure_out(figure, paper.title if paper else None)}

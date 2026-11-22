@@ -18,6 +18,7 @@ from ..db import SessionLocal
 from ..models import AgentRun, AgentStep, AgentTask, Paper, User, utcnow
 
 logger = logging.getLogger("paperlens.agent_tasks")
+from .llm import LLMClient, LLMError, ModelConfig
 from .tools import TOOL_SPECS
 
 ALLOWED_TOOLS = {spec["function"]["name"] for spec in TOOL_SPECS} | {"research_intelligence"}

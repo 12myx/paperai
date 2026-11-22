@@ -13,13 +13,15 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import AcademicArtifact, ArtifactQualityReport, Chunk, ExportRecord, Paper, User
+from ..models import AcademicArtifact, ArtifactQualityReport, Chunk, ExportRecord, KnowledgeItem, Paper, User
 from . import analysis
 from .export import build_export
 from .evidence import verify_quote
 from .intelligence import IntelligenceError, resolve_scope
 from .multipaper import _facet_citations, ensure_facets
+from .artifact_preflight import paper_preflight
 from .storage import safe_filename, storage
+from .knowledge import ensure_meta
 
 KINDS = {
     "literature_review": {"label": "文献综述", "description": "资料库范围内的研究背景、方法版图、发现与缺口。"},
@@ -30,7 +32,9 @@ KINDS = {
     "research_plan": {"label": "研究计划", "description": "阶段、里程碑与交付物建议；时间表为建议。"},
     "experiment_design": {"label": "实验设计", "description": "数据集、指标、基线、消融与风险。"},
     "ppt_outline": {"label": "PPT 大纲", "description": "组会/答辩用的 10 页汇报大纲。"},
+    "knowledge_pack": {"label": "论文知识包", "description": "把一篇论文整理成可存入知识库的结构化卡片与证据。"},
 }
+MULTI_PAPER_KINDS = {"literature_review", "comparison_report", "direction_analysis"}
 
 REQUIRED = {
     "literature_review": ["范围与证据声明", "摘要", "研究背景与问题", "方法版图", "主要发现", "局限与研究缺口", "资料库内参考文献"],
@@ -41,6 +45,7 @@ REQUIRED = {
     "research_plan": ["范围与证据声明", "目标", "阶段安排", "里程碑与交付物", "风险与依赖"],
     "experiment_design": ["范围与证据声明", "数据与指标", "基线与变量", "消融与对照", "评估与统计", "风险与边界"],
     "ppt_outline": ["范围与证据声明", "Slide 1", "Slide 2", "Slide 3", "Slide 4", "Slide 5", "Slide 6", "Slide 7", "Slide 8", "Slide 9", "Slide 10"],
+    "knowledge_pack": ["范围与证据声明", "论文速览", "研究问题", "方法与数据", "主要发现", "局限", "可复用知识卡", "证据表说明"],
 }
 
 STRONG_CLAIM = re.compile(
@@ -77,7 +82,8 @@ def _scope_statement(scope: dict) -> str:
     years = f"{scope.get('year_min')}–{scope.get('year_max')}" if scope.get("year_min") else "年份未知"
     return (
         f"本成果仅基于资料库内 {scope['paper_count']} 篇论文（{years}），不代表全球文献综述，"
-        "也未引入外部文献。所有带 [C#] 的判断均可回到原文；计划、时间表与实验建议属于待验证方案，不是论文事实。"
+        + (f"已排除 {scope['excluded_unreadable']} 篇无可提取文本的论文。" if scope.get("excluded_unreadable") else "")
+        + "也未引入外部文献。所有带 [C#] 的判断均可回到原文；计划、时间表与实验建议属于待验证方案，不是论文事实。"
     )
 
 
@@ -191,6 +197,28 @@ def build_content(kind: str, papers: list[Paper], facets: list, citations: list[
         for paper, item in rows:
             lines.append(f"- 原文局限：{item['limitations']['text']}{_cite(item['limitations']['citation'])}")
 
+    elif kind == "knowledge_pack":
+        lines += ["## 论文速览", ""]
+        for paper, _row in rows:
+            lines.append(f"- **{paper.title}** · {paper.year or '年份未知'} · {paper.page_count or '?'} 页")
+        lines += ["", "## 研究问题", ""]
+        for paper, item in rows:
+            lines.append(f"- {item['research_question']['text']}{_cite(item['research_question']['citation'])}")
+        lines += ["", "## 方法与数据", ""]
+        for paper, item in rows:
+            lines.append(f"- **方法**：{item['method']['text']}{_cite(item['method']['citation'])}")
+            lines.append(f"- **数据**：{item['dataset']['text']}{_cite(item['dataset']['citation'])}")
+            lines.append(f"- **指标**：{item['metrics']['text']}{_cite(item['metrics']['citation'])}")
+        lines += ["", "## 主要发现", ""]
+        for paper, item in rows:
+            lines.append(f"- 《{paper.title}》：{item['findings']['text']}{_cite(item['findings']['citation'])}")
+        lines += ["", "## 局限", ""]
+        for paper, item in rows:
+            lines.append(f"- {item['limitations']['text']}{_cite(item['limitations']['citation'])}")
+        lines += ["", "## 可复用知识卡", ""]
+        for paper, item in rows:
+            for field, label in (("research_question", "研究问题"), ("method", "方法"), ("dataset", "数据"), ("metrics", "指标"), ("findings", "结论"), ("limitations", "局限")):
+                lines.append(f"- **{label}**：{item[field]['text']}{_cite(item[field]['citation'])}（p.{item[field]['page'] or '?'}）")
     elif kind == "research_plan":
         lines += ["## 目标", "", "在资料库证据基础上完成一个可复现的研究闭环；时间安排是建议，不是承诺。", "", "## 阶段安排", ""]
         phases = [
@@ -240,6 +268,13 @@ def build_content(kind: str, papers: list[Paper], facets: list, citations: list[
             lines.append("")
 
     lines += ["", "## 证据表说明", "", "完整证据表由系统单独保存并在导出文件中附上；[C#] 编号对应证据表的 key。"]
+    used = _used_citations("\n".join(lines), citations)
+    if kind == "knowledge_pack" and not used and citations:
+        # Keep the pack useful even when local facets only produced "未提及";
+        # attach real quote evidence rather than returning a citation-free pack.
+        lines += ["", "## 可引用证据", ""]
+        for citation in citations[:10]:
+            lines.append(f"- [{citation.get('key')}] {_short(citation.get('quote') or '', 160)}（p.{citation.get('page') or '?'}）")
     content = "\n".join(lines).strip() + "\n"
     used = _used_citations(content, citations)
     return content, used
@@ -287,21 +322,41 @@ def check_artifact(db: Session, artifact: AcademicArtifact) -> dict:
     if len(content.strip()) < 900:
         issues.append({"code": "too_short", "severity": "warning", "message": "成果篇幅过短，可能遗漏关键部分", "location": "format"})
 
-    sentences = [s.strip() for s in re.split(r"(?<=[。！？.!?])\s*", content) if len(s.strip()) >= 30]
-    seen: dict[str, int] = {}
-    for sentence in sentences:
-        normalized = re.sub(r"\s+", " ", sentence).casefold()
-        seen[normalized] = seen.get(normalized, 0) + 1
-    for sentence, count in seen.items():
+    # Scope repetition checks to a section: the same facet is intentionally
+    # repeated in summary and detail sections, which is not a duplicated claim.
+    seen: dict[tuple[str, str], int] = {}
+    section = ""
+    lines = content.splitlines()
+    for line in lines:
+        heading = re.match(r"^#{2,4}\s+(.+)$", line)
+        if heading:
+            section = heading.group(1).strip()
+            continue
+        for sentence in re.split(r"(?<=[。！？.!?])\s*", line):
+            sentence = sentence.strip()
+            if len(sentence) < 30:
+                continue
+            normalized = re.sub(r"\s+", " ", sentence).casefold()
+            key = (section, normalized)
+            seen[key] = seen.get(key, 0) + 1
+    for (section, sentence), count in seen.items():
         if count > 1:
-            issues.append({"code": "duplicate_sentence", "severity": "warning", "message": f"重复句子 {count} 次：{_short(sentence, 60)}", "location": "body"})
+            issues.append({"code": "duplicate_sentence", "severity": "warning", "message": f"章节「{section}」重复句子 {count} 次：{_short(sentence, 60)}", "location": "body"})
 
-    for sentence in sentences:
-        if STRONG_CLAIM.search(sentence) and not re.search(r"\[C\d+\]", sentence) and not sentence.startswith("#"):
-            issues.append({"code": "unsupported_claim", "severity": "warning", "message": f"强断言缺少引用：{_short(sentence, 80)}", "location": "body"})
-            break
+    # A bullet is evidence-backed if its line carries a citation; don't split
+    # the trailing [C#] into the next sentence and produce a false warning.
+    for line in lines:
+        if line.startswith("#") or re.search(r"\[C\d+\]", line):
+            continue
+        for sentence in re.split(r"(?<=[。！？.!?])\s*", line):
+            if STRONG_CLAIM.search(sentence) and not re.search(r"\[C\d+\]", sentence):
+                issues.append({"code": "unsupported_claim", "severity": "warning", "message": f"强断言缺少引用：{_short(sentence.strip(), 80)}", "location": "body"})
+                break
+        else:
+            continue
+        break
 
-    if len(artifact.paper_ids or []) < 3:
+    if artifact.kind in MULTI_PAPER_KINDS and len(artifact.paper_ids or []) < 3:
         issues.append({"code": "small_scope", "severity": "warning", "message": f"仅覆盖 {len(artifact.paper_ids or [])} 篇论文，不能代表领域综述", "location": "scope"})
 
     errors = sum(1 for issue in issues if issue["severity"] == "error")
@@ -333,12 +388,30 @@ async def generate_artifact(
 ) -> tuple[AcademicArtifact, ArtifactQualityReport]:
     if kind not in KINDS:
         raise ValueError("未知成果类型")
+    if kind == "knowledge_pack" and (scope_type != "papers" or not paper_ids):
+        raise ValueError("论文知识包必须明确选择一篇论文，不能绑定整个资料库")
     try:
         papers, scope = resolve_scope(db, user, scope_type, scope_id, paper_ids)
     except IntelligenceError as exc:
         raise ValueError(str(exc)) from exc
+    checks = [paper_preflight(db, user, paper) for paper in papers]
+    readable = [paper for paper, check in zip(papers, checks) if check["ready"]]
+    if not readable:
+        detail = checks[0]["message"] if checks else "所选范围没有可读论文"
+        raise ValueError(detail)
+    if len(readable) < len(papers):
+        scope["excluded_unreadable"] = len(papers) - len(readable)
+        papers = readable
+        scope["paper_count"] = len(papers)
+        years = sorted({paper.year for paper in papers if paper.year})
+        scope["years"] = years
+        scope["year_min"] = years[0] if years else None
+        scope["year_max"] = years[-1] if years else None
+        scope["unknown_years"] = sum(1 for paper in papers if not paper.year)
     facets = await ensure_facets(db, user, papers, config, force=False)
     citations, _context = _facet_citations(db, papers, facets)
+    if not citations:
+        raise ValueError("所选论文没有可引用的原文证据，未生成空成果；请检查解析文本或重新解析 PDF")
     content, used = build_content(kind, papers, facets, citations, scope)
     artifact = AcademicArtifact(
         user_id=user.id,
@@ -403,3 +476,61 @@ def export_artifact(db: Session, user: User, artifact: AcademicArtifact, fmt: st
     db.commit()
     db.refresh(record)
     return record
+
+def save_artifact_to_knowledge(db: Session, user: User, artifact: AcademicArtifact) -> tuple[list[KnowledgeItem], object]:
+    """Persist each substantive artifact section as a knowledge item.
+
+    The operation is idempotent through artifact.knowledge_item_ids. It also
+    writes a Markdown file so the pack exists both in the knowledge base and as
+    a portable document.
+    """
+
+    if artifact.knowledge_item_ids:
+        rows = list(
+            db.execute(
+                select(KnowledgeItem).where(
+                    KnowledgeItem.user_id == user.id,
+                    KnowledgeItem.id.in_(artifact.knowledge_item_ids),
+                )
+            ).scalars().all()
+        )
+        if rows:
+            return rows, None
+    if not artifact.citations:
+        raise ValueError("成果没有可引用证据，不能保存到知识库")
+    parts = re.split(r"^##\s+(.+)$", artifact.content or "", flags=re.MULTILINE)
+    sections: list[tuple[str, str]] = []
+    for index in range(1, len(parts), 2):
+        heading = parts[index].strip()
+        body = parts[index + 1].strip() if index + 1 < len(parts) else ""
+        if heading in {"范围与证据声明", "证据表说明"} or len(body) < 20:
+            continue
+        sections.append((heading, body))
+    if not sections:
+        raise ValueError("成果没有可保存的知识章节")
+    paper = db.get(Paper, artifact.paper_ids[0]) if artifact.paper_ids else None
+    first = artifact.citations[0] if artifact.citations else {}
+    created: list[KnowledgeItem] = []
+    for heading, body in sections:
+        item = KnowledgeItem(
+            user_id=user.id,
+            title=(f"{artifact.title} · {heading}")[:390],
+            content=body,
+            kind="note",
+            source_paper_id=paper.id if paper else None,
+            source_chunk_id=first.get("chunk_id"),
+            source_page=first.get("page"),
+            source_quote=(first.get("quote") or "")[:4000] or None,
+            tags=["知识包", *( [paper.title[:60]] if paper else [] )],
+        )
+        db.add(item)
+        db.flush()
+        ensure_meta(db, item)
+        created.append(item)
+    artifact.knowledge_item_ids = [item.id for item in created]
+    artifact.knowledge_saved_at = datetime.now(timezone.utc)
+    db.commit()
+    for item in created:
+        db.refresh(item)
+    record = export_artifact(db, user, artifact, "md")
+    return created, record

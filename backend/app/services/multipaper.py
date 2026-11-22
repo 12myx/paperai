@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Chunk, Evidence, Paper, PaperFacet, ResearchInsight, User
 from . import analysis
-from .evidence import EvidenceError, create_evidence
+from .evidence import EvidenceError, create_evidence, verify_quote
 from .llm import LLMClient, LLMError, ModelConfig
 from .rag import search as rag_search
 
@@ -143,6 +143,28 @@ def _facet_for(db: Session, user: User, paper: Paper) -> PaperFacet | None:
     ).scalar_one_or_none()
 
 
+def _facet_valid(db: Session, facet: PaperFacet) -> bool:
+    """Reject cached facets whose chunk or quote no longer verifies.
+
+    A model can return a paraphrase in the quote field. Evidence is still
+    stored for audit, but it must never be reused as a citation if its quote
+    is not actually present in the cited chunk.
+    """
+    for _field, _label in DIMENSIONS:
+        cell = (facet.fields or {}).get(_field) or {}
+        chunk_id = cell.get("chunk_id")
+        if not chunk_id:
+            continue
+        chunk = db.get(Chunk, chunk_id)
+        if chunk is None:
+            return False
+        evidence = db.get(Evidence, cell.get("evidence_id")) if cell.get("evidence_id") else None
+        quote = (evidence.quote if evidence else cell.get("quote")) or ""
+        if quote and not verify_quote(chunk.text, quote)[0]:
+            return False
+    return True
+
+
 def _local_facets(db: Session, user: User, paper: Paper) -> tuple[dict, bool]:
     chunks = list(
         db.execute(select(Chunk).where(Chunk.paper_id == paper.id).order_by(Chunk.order_index)).scalars().all()
@@ -151,7 +173,7 @@ def _local_facets(db: Session, user: User, paper: Paper) -> tuple[dict, bool]:
     return fields, True
 
 
-def _model_facets(db: Session, user: User, paper: Paper, config: ModelConfig, fallback: dict) -> tuple[dict, bool]:
+async def _model_facets(db: Session, user: User, paper: Paper, config: ModelConfig, fallback: dict) -> tuple[dict, bool]:
     context, citations = analysis.paper_context(db, paper, max_chars=7000)
     if not citations:
         return fallback, True
@@ -164,7 +186,7 @@ def _model_facets(db: Session, user: User, paper: Paper, config: ModelConfig, fa
         "论文：\n" + context
     )
     try:
-        response = LLMClient(config).complete(
+        response = await LLMClient(config).complete(
             [{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=1200,
@@ -204,6 +226,8 @@ def _model_facets(db: Session, user: User, paper: Paper, config: ModelConfig, fa
                 meta={"field": field, "origin": "model"},
             )
         except EvidenceError:
+            continue
+        if not evidence.verified:
             continue
         fields[field] = {
             "text": text,
@@ -245,14 +269,14 @@ async def ensure_facets(
     facets: list[PaperFacet] = []
     for paper in papers:
         existing = _facet_for(db, user, paper)
-        if existing and not force:
+        if existing and not force and _facet_valid(db, existing):
             facets.append(existing)
             continue
         fallback, _ = _local_facets(db, user, paper)
         fields, local = fallback, True
         model_name = None
         if config is not None:
-            fields, local = _model_facets(db, user, paper, config, fallback)
+            fields, local = await _model_facets(db, user, paper, config, fallback)
             model_name = config.model
         _prune_facet_evidence(db, paper.id, fields)
         if existing:
@@ -290,6 +314,11 @@ def _facet_citations(db: Session, papers: list[Paper], facets: list[PaperFacet])
     if evidence_ids:
         rows = db.execute(select(Evidence).where(Evidence.user_id == facets[0].user_id, Evidence.id.in_(evidence_ids))).scalars().all()
         evidence_map = {item.id: item for item in rows}
+    chunk_ids = [item.chunk_id for item in evidence_map.values() if item.chunk_id]
+    chunk_map = {
+        chunk.id: chunk
+        for chunk in db.execute(select(Chunk).where(Chunk.id.in_(chunk_ids))).scalars().all()
+    } if chunk_ids else {}
     citations: list[dict] = []
     paper_map = {paper.id: paper for paper in papers}
     lines: list[str] = []
@@ -303,6 +332,10 @@ def _facet_citations(db: Session, papers: list[Paper], facets: list[PaperFacet])
             text = cell.get("text") or "未提及"
             evidence = evidence_map.get(cell.get("evidence_id"))
             key = None
+            if evidence is not None and evidence.verified:
+                chunk = chunk_map.get(evidence.chunk_id)
+                if chunk is None or not verify_quote(chunk.text, evidence.quote or "")[0]:
+                    evidence = None
             if evidence is not None:
                 key = f"C{len(citations) + 1}"
                 citations.append(
@@ -464,7 +497,7 @@ async def build_conflicts(
             "没有证据就不要生成冲突；无法判断就返回空数组。\n\n" + context
         )
         try:
-            response = LLMClient(config).complete(
+            response = await LLMClient(config).complete(
                 [{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=1600,
@@ -573,7 +606,7 @@ async def build_evolution(
             "没有证据就不要生成关系。\n\n" + context
         )
         try:
-            response = LLMClient(config).complete(
+            response = await LLMClient(config).complete(
                 [{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=1400,

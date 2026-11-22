@@ -8,6 +8,7 @@ claim must carry evidence keys.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
 from collections import Counter, defaultdict
@@ -260,7 +261,7 @@ def _landscape_items(papers: list[Paper], facets: list, citations: list[dict]) -
     }
 
 
-def build_landscape(db: Session, user: User, papers: list[Paper], facets: list, scope: dict, config: ModelConfig | None) -> IntelligenceReport:
+async def build_landscape(db: Session, user: User, papers: list[Paper], facets: list, scope: dict, config: ModelConfig | None) -> IntelligenceReport:
     citations, context = _facet_citations(db, papers, facets)
     local_data = _landscape_items(papers, facets, citations)
     years = scope.get("years") or []
@@ -305,7 +306,7 @@ def build_landscape(db: Session, user: User, papers: list[Paper], facets: list, 
             + context
         )
         try:
-            response = LLMClient(config).complete([{"role": "user", "content": prompt}], temperature=0.25, max_tokens=1800)
+            response = await LLMClient(config).complete([{"role": "user", "content": prompt}], temperature=0.25, max_tokens=1800)
             payload = _parse_json(response.get("content") or "")
             if payload:
                 by_key = {citation["key"]: citation for citation in citations}
@@ -548,7 +549,7 @@ def _local_opportunities(papers: list[Paper], facets: list, citations: list[dict
     return results[:8]
 
 
-def build_opportunities(db: Session, user: User, papers: list[Paper], facets: list, scope: dict, config: ModelConfig | None) -> IntelligenceReport:
+async def build_opportunities(db: Session, user: User, papers: list[Paper], facets: list, scope: dict, config: ModelConfig | None) -> IntelligenceReport:
     citations, context = _facet_citations(db, papers, facets)
     opportunities = _local_opportunities(papers, facets, citations)
     data = {
@@ -670,7 +671,12 @@ async def build_overview(
         cached = None if force else _latest_report(db, user, kind, scope, signature)
         if cached is not None and set(cached.paper_ids or []) != current_ids:
             cached = None
-        report = cached or builder()
+        if cached is not None:
+            report = cached
+        else:
+            report = builder()
+            if inspect.isawaitable(report):
+                report = await report
         reports[kind] = report
 
     return {

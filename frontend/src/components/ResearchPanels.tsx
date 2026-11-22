@@ -199,7 +199,7 @@ export function ConflictView({ data, onOpen }: { data: ConflictResult; onOpen: (
               {conflict.evidence.length > 0 && (
                 <div className="conflict-evidence">
                   {conflict.evidence.slice(0, 4).map((citation) => (
-                    <button key={citation.key + citation.chunk_id} onClick={() => onOpen(citation.paper_id, citation.page)}>
+                    <button key={citation.key + citation.chunk_id} onClick={() => onOpen(citation.paper_id || "", citation.page)}>
                       <span>{citation.key}</span> p.{citation.page} · {truncate(citation.quote, 80)}
                     </button>
                   ))}
@@ -313,7 +313,7 @@ export function EvolutionView({ data, onOpen }: { data: EvolutionResult; onOpen:
                 </div>
                 <p>{relation.reason}</p>
                 {relation.evidence.slice(0, 2).map((citation) => (
-                  <button key={citation.key} onClick={() => onOpen(citation.paper_id, citation.page)}>
+                  <button key={citation.key} onClick={() => onOpen(citation.paper_id || "", citation.page)}>
                     {citation.key} · p.{citation.page}
                   </button>
                 ))}

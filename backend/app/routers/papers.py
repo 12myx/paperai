@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -119,10 +119,17 @@ def list_papers(
     db: Session = Depends(get_db),
 ) -> dict:
     statement = select(Paper).where(Paper.user_id == user.id)
+    match_rank = None
     if query.strip():
         pattern = f"%{query.strip()}%"
         statement = statement.where(
             or_(Paper.title.ilike(pattern), Paper.authors.ilike(pattern), Paper.abstract.ilike(pattern))
+        )
+        match_rank = case(
+            (Paper.title.ilike(pattern), 0),
+            (Paper.authors.ilike(pattern), 1),
+            (Paper.abstract.ilike(pattern), 2),
+            else_=3,
         )
     if status_filter:
         statement = statement.where(Paper.status == status_filter)
@@ -141,7 +148,8 @@ def list_papers(
         "pages": Paper.page_count.desc(),
     }.get(sort, Paper.created_at.desc())
     total = db.execute(select(func.count()).select_from(statement.subquery())).scalar() or 0
-    papers = list(db.execute(statement.order_by(order).limit(limit).offset(offset)).scalars().all())
+    order_terms = [match_rank, order] if match_rank is not None else [order]
+    papers = list(db.execute(statement.order_by(*order_terms).limit(limit).offset(offset)).scalars().all())
     ids = [p.id for p in papers]
     counts: dict[str, int] = {}
     if ids:

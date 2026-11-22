@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   BookMarked,
@@ -54,6 +54,7 @@ export function Knowledge() {
   const [duplicate, setDuplicate] = useState<{ candidate: KnowledgeItem; score: number } | null>(null);
   const [duplicatesOpen, setDuplicatesOpen] = useState(false);
   const [duplicatePairs, setDuplicatePairs] = useState<{ score: number; left: KnowledgeItem; right: KnowledgeItem }[]>([]);
+  const [searchParams] = useSearchParams();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -82,6 +83,13 @@ export function Knowledge() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const focus = searchParams.get("focus");
+    if (!focus || !items.length) return;
+    const item = items.find((entry) => entry.id === focus);
+    if (item && editor?.id !== item.id) setEditor(item);
+  }, [items, searchParams]);
 
   useEffect(() => {
     if (view !== "graph") return;
@@ -390,6 +398,11 @@ export function Knowledge() {
         size="lg"
         footer={
           <>
+            {editor?.id && (
+              <Button variant="soft" onClick={() => { setEditor(null); navigate("/app?knowledge=" + encodeURIComponent(editor.id || "")); }}>
+                在 Chat 中使用
+              </Button>
+            )}
             <Button variant="ghost" onClick={() => setEditor(null)}>取消</Button>
             <Button variant="primary" loading={saving} onClick={() => void saveItem()}>保存</Button>
           </>

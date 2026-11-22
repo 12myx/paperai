@@ -6,7 +6,6 @@ import {
   FileText,
   FolderKanban,
   Plus,
-  StickyNote,
   Target,
   Trash2,
 } from "lucide-react";
@@ -27,9 +26,7 @@ export function Projects() {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", goal: "", description: "" });
-  const [noteOpen, setNoteOpen] = useState(false);
-  const [note, setNote] = useState({ title: "", content: "" });
+  const [form, setForm] = useState<{ name: string; goal: string; description: string; paper_ids: string[] }>({ name: "", goal: "", description: "", paper_ids: [] });
   const [pickerOpen, setPickerOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Project | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -74,12 +71,10 @@ export function Projects() {
     }
     try {
       const response = await api<{ project: Project }>("/projects", { method: "POST", body: form });
-      toast("项目已创建", "success");
+      toast("项目已创建，进入研究对话", "success");
       setCreateOpen(false);
-      setForm({ name: "", goal: "", description: "" });
-      await loadList();
-      setActiveId(response.project.id);
-      setSearchParams({ project: response.project.id });
+      setForm({ name: "", goal: "", description: "", paper_ids: [] });
+      navigate("/app?project=" + response.project.id);
     } catch {
       toast("创建失败", "error");
     }
@@ -96,25 +91,6 @@ export function Projects() {
     }
   }
 
-  async function addNote() {
-    if (!detail || !note.title.trim()) {
-      toast("请填写笔记标题", "error");
-      return;
-    }
-    try {
-      const response = await api<{ item: ProjectItem }>("/projects/" + detail.project.id + "/items", {
-        method: "POST",
-        body: { kind: "note", title: note.title, content: note.content },
-      });
-      setDetail({ ...detail, items: [response.item, ...detail.items] });
-      setNoteOpen(false);
-      setNote({ title: "", content: "" });
-      toast("已添加到项目", "success");
-    } catch {
-      toast("添加失败", "error");
-    }
-  }
-
   async function addPapers(ids: string[], selectedPapers: Paper[]) {
     if (!detail) return;
     try {
@@ -123,7 +99,6 @@ export function Projects() {
           method: "POST",
           body: { kind: "paper", ref_id: paper.id, title: paper.title },
         });
-        detail.items.unshift(response.item);
       }
       setDetail({ ...detail, items: [...detail.items] });
       toast("论文已加入项目", "success");
@@ -218,7 +193,6 @@ export function Projects() {
                 <ProgressBar value={project.progress} />
                 <div className="project-card-foot">
                   <span>{project.counts.paper || 0} 论文</span>
-                  <span>{project.counts.note || 0} 笔记</span>
                   <span>{relativeTime(project.updated_at)}</span>
                 </div>
               </button>
@@ -274,31 +248,23 @@ export function Projects() {
 
                 <Card className="project-items-card">
                   <div className="project-items-head">
-                    <h3>项目资料（{detail.items.length}）</h3>
-                    <div>
-                      <Button size="sm" variant="ghost" icon={<StickyNote size={13} />} onClick={() => setNoteOpen(true)}>
-                        添加笔记
-                      </Button>
-                      <Button size="sm" variant="ghost" icon={<FileText size={13} />} onClick={() => setPickerOpen(true)}>
-                        添加论文
-                      </Button>
-                    </div>
+                    <h3>项目论文（{detail.items.filter((item) => item.kind === "paper").length}）</h3>
+                    <Button size="sm" variant="ghost" icon={<FileText size={13} />} onClick={() => setPickerOpen(true)}>
+                      添加论文
+                    </Button>
                   </div>
-                  {detail.items.length === 0 ? (
-                    <p className="muted">还没有项目资料。添加第一篇论文或一条研究笔记。</p>
+                  {detail.items.filter((item) => item.kind === "paper").length === 0 ? (
+                    <p className="muted">还没有论文。添加论文后即可在 Chat 中围绕项目提问。</p>
                   ) : (
                     <ul className="project-item-list">
-                      {detail.items.map((item) => (
+                      {detail.items.filter((item) => item.kind === "paper").map((item) => (
                         <li key={item.id}>
-                          <span className={cn("item-kind", item.kind)}>
-                            {item.kind === "paper" ? <FileText size={13} /> : <StickyNote size={13} />}
-                          </span>
+                          <span className="item-kind paper"><FileText size={13} /></span>
                           <div>
                             <strong>{item.title}</strong>
-                            {item.content && <p>{truncate(item.content, 140)}</p>}
                           </div>
                           <div className="item-actions">
-                            {item.kind === "paper" && item.ref_id && (
+                            {item.ref_id && (
                               <button onClick={() => navigate("/app/papers/" + item.ref_id)}>打开 <ArrowRight size={12} /></button>
                             )}
                             <IconButton label="移除" onClick={() => void removeItem(item)}><Trash2 size={13} /></IconButton>
@@ -335,25 +301,27 @@ export function Projects() {
         <Field label="描述">
           <Input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
         </Field>
-      </Modal>
-
-      <Modal
-        open={noteOpen}
-        onClose={() => setNoteOpen(false)}
-        title="添加研究笔记"
-        size="md"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setNoteOpen(false)}>取消</Button>
-            <Button variant="primary" onClick={() => void addNote()}>添加</Button>
-          </>
-        }
-      >
-        <Field label="标题">
-          <Input value={note.title} onChange={(event) => setNote({ ...note, title: event.target.value })} />
-        </Field>
-        <Field label="内容">
-          <Textarea rows={5} value={note.content} onChange={(event) => setNote({ ...note, content: event.target.value })} />
+        <Field label="研究论文">
+          <div className="project-create-papers">
+            {papers.filter((paper) => paper.status === "ready").length === 0 ? (
+              <p className="muted small">资料库还没有已解析论文；也可以先创建空项目。</p>
+            ) : papers.filter((paper) => paper.status === "ready").map((paper) => (
+              <label key={paper.id} className="project-create-paper">
+                <input
+                  type="checkbox"
+                  checked={form.paper_ids.includes(paper.id)}
+                  onChange={(event) => setForm({
+                    ...form,
+                    paper_ids: event.target.checked
+                      ? [...form.paper_ids, paper.id]
+                      : form.paper_ids.filter((id) => id !== paper.id),
+                  })}
+                />
+                <span>{paper.title}</span>
+              </label>
+            ))}
+          </div>
+          <p className="muted small">创建后直接进入 Chat，项目论文会自动成为研究范围。</p>
         </Field>
       </Modal>
 

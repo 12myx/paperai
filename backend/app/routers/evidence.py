@@ -9,6 +9,7 @@ from ..deps import get_current_user
 from ..models import Annotation, Evidence, KnowledgeItem, Paper, User
 from ..schemas import EvidenceCreate, EvidenceUpdate
 from ..serializers import evidence_out
+from ..services.evidence_view import build_source_contexts
 from ..services.evidence import (
     EVIDENCE_TYPES,
     EvidenceError,
@@ -52,7 +53,11 @@ def list_evidence_endpoint(
         limit=limit,
         offset=offset,
     )
-    return {"items": [evidence_out(item, title) for item, title in rows], "total": len(rows)}
+    contexts = build_source_contexts(db, user, rows)
+    return {
+        "items": [evidence_out(item, title, contexts.get(item.id)) for item, title in rows],
+        "total": len(rows),
+    }
 
 
 @router.get("/stats")

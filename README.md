@@ -55,11 +55,15 @@ PaperLens 不是“又一个 PDF 聊天框”。它把 **PDF 解析 → 章节�
 | P8 学术成果 | 综述/报告/开题/计划/实验/PPT 大纲 + Quality Checker | ✅ |
 | P9 性能与稳定 | 持久队列、增量缓存、限流、超时重试、备份恢复 | ✅ |
 | V3.2 产品升级 | 修复 7 个信任缺陷、RI 缓存/可比性、Agent 恢复/规划、全局搜索/侧栏/阅读恢复、多文件批量上传 | ✅ |
+| V4.0 统一研究 Agent | 知识库/项目/图像/成果进入 Chat 上下文；27 个工具；资源级引用 | ✅（视觉语义受 Provider 限制） |
+| V4.1 真实 Agent 加固 | 工具循环预算/超时/重复保护、签名写确认、Prompt Injection 测试、多资源选择器、Vision Provider 接口 | ✅（真实模型/视觉待外部授权） |
+| V4.2 可靠性与真实验收 | Action 持久化/并发原子领取、自动检索开关、资源排除、真实 DeepSeek smoke、6 并发本地压力 | ✅（PostgreSQL/Docker 未验证） |
 | 知识库 | 知识片段、标签、来源页码、置顶、关联图谱、导出 | ✅ |
-| 图表库 | 图表提取、预览、注释、收藏、AI 解释（文本依据） | ✅ |
+| 论文知识包 | 选择论文、预检可读性、生成结构化知识卡片、保存到个人知识库并导出 Markdown | ✅ |
+| 图表库 | 精选图表/表格/页面快照分层、按论文分组、视觉记录保存、低置信度确认、AI 解释（文本依据） | ✅（P0 重分类） |
 | 研究项目 | 目标、进度、论文/笔记条目、项目导出 | ✅ |
 | 导出 | PDF / DOCX / Markdown / TXT / CSV / JSON，真实文件下载 | ✅ |
-| Agent 工具 | 15 个真实工具；写操作（保存知识/批注/导出）需用户确认 | ✅ |
+| Agent 工具 | 27 个真实工具；写操作（保存知识/批注/生成/导出成果）需用户确认 | ✅ |
 | 部署 | Docker、Compose、Nginx、备份脚本、健康检查 | ✅ |
 
 ## 快速开始
@@ -224,5 +228,25 @@ PaperLens 明确区分“已实现”和“需要外部条件”：
 - [P9 实施报告](docs/V3.1_P9_REPORT.md)
 - [V3.2 产品升级报告](docs/V3.2_PRODUCT_UPGRADE.md)
 - [多文件全链路测试报告](qa/FULL_CHAIN_TEST_REPORT_2026-11-06.md)
+- [V4 统一研究 Agent 报告](docs/V4.0_UNIFIED_RESEARCH_AGENT_REPORT.md)
+- [V4.1 真实 LLM Agent 报告](docs/V4.1_REAL_LLM_AGENT_REPORT.md)
+- [V4.1 安全审计](docs/V4.1_SECURITY_AUDIT.md)
+- [V4.1 验收矩阵](docs/V4.1_ACCEPTANCE_MATRIX.md)
+- [V4.2 Agent 可靠性报告](docs/V4.2_AGENT_RELIABILITY_REPORT.md)
+- [V4.2 Action Replay 审计](docs/V4.2_ACTION_REPLAY_AUDIT.md)
+- [V4.2 验收矩阵](docs/V4.2_ACCEPTANCE_MATRIX.md)
+- [V4.2 图表库 P0 重设计](docs/V4.2_FIGURE_LIBRARY_REDESIGN.md)
+- [V4.2 论文知识包升级](docs/V4.2_KNOWLEDGE_PACK_UPGRADE.md)
+- [V4.2 学术成果引用与质检修复](docs/V4.2_ARTIFACT_CITATION_QUALITY.md)
+- [V4.2 多论文研究冲突/演化修复](docs/V4.2_RESEARCH_INTEL_FIX.md)
+- [V4.2 研究项目创建/添加论文修复](docs/V4.2_PROJECTS_MODAL_FIX.md)
+- [V4.2 体验优化](docs/V4.2_UX_POLISH.md)
+- [V4.2 证据库重定义](docs/V4.2_EVIDENCE_REVIEW_REDESIGN.md)
+- [V4.2 图表库文件式打包](docs/V4.2_FIGURE_PACKAGE_VIEW.md)
+- [统一研究上下文架构](docs/UNIFIED_RESEARCH_CONTEXT_ARCHITECTURE.md)
+- [人工功能验收清单](docs/MANUAL_FUNCTION_CHECKLIST.md)
+- [人工验收结果](docs/MANUAL_ACCEPTANCE_RESULTS.md)
+- [项目状态](docs/PROJECT_STATUS.md)
+- [V4 运行报告](docs/RUN_REPORT.md)
 - [部署报告](docs/DEPLOYMENT_REPORT.md)
 - [安全说明](docs/SECURITY.md)

@@ -16,8 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .compression import StaticGZipMiddleware
 from .config import settings
-from .db import init_db
+from .db import SessionLocal, init_db
 from .rate_limit import key_for, limiter
+from .services.actions import expire_actions, reconcile_stale_actions
 from .services.agent_tasks import recover_interrupted_tasks
 from .services.queue import processing_queue
 from .routers import annotations, artifacts, auth, chat, evidence, exports, figures, intelligence, jobs, library, ops, papers, research, research_intel, settings as settings_router
@@ -37,6 +38,9 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    with SessionLocal() as db:
+        expire_actions(db)
+        reconcile_stale_actions(db)
     recover_interrupted_tasks()
     await processing_queue.start()
     limiter.limit = max(1, settings.rate_limit_per_minute)

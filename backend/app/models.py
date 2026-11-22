@@ -159,6 +159,13 @@ class Figure(Base):
     note: Mapped[str | None] = mapped_column(Text)
     saved: Mapped[bool] = mapped_column(Boolean, default=False)
     table_markdown: Mapped[str | None] = mapped_column(Text)
+    detected_kind: Mapped[str] = mapped_column(String(24), default="unclassified", index=True)
+    quality_score: Mapped[int] = mapped_column(Integer, default=0)
+    caption_confidence: Mapped[float] = mapped_column(Float, default=0)
+    is_page_snapshot: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    review_status: Mapped[str] = mapped_column(String(16), default="auto")
+    visual_status: Mapped[str] = mapped_column(String(16), default="unavailable")
 
     paper = relationship("Paper", back_populates="figures")
 
@@ -374,8 +381,30 @@ class AcademicArtifact(Base):
     model: Mapped[str | None] = mapped_column(String(120))
     quality_score: Mapped[int] = mapped_column(Integer, default=0)
     quality_status: Mapped[str] = mapped_column(String(16), default="unchecked")
+    knowledge_item_ids: Mapped[list] = mapped_column(JSON, default=list)
+    knowledge_saved_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ActionRequest(Base):
+    """Persistent, user-bound confirmation token for agent write actions."""
+
+    __tablename__ = "action_requests"
+
+    id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    tool_name: Mapped[str] = mapped_column(String(64), index=True)
+    args_json: Mapped[str] = mapped_column(Text, default="{}")
+    args_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    result_summary: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
 
 
 class ArtifactQualityReport(Base):
@@ -389,6 +418,27 @@ class ArtifactQualityReport(Base):
     issues: Mapped[list] = mapped_column(JSON, default=list)
     summary: Mapped[str] = mapped_column(Text, default="")
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ResourceUsage(Base):
+    """Lifecycle ledger for resources included/read/referenced in an agent run."""
+
+    __tablename__ = "resource_usage"
+    __table_args__ = (UniqueConstraint("run_id", "resource_type", "resource_id", "stage", name="uq_resource_usage_stage"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    run_id: Mapped[str] = mapped_column(String(32), index=True)
+    message_id: Mapped[str | None] = mapped_column(String(32))
+    resource_type: Mapped[str] = mapped_column(String(24), index=True)
+    resource_id: Mapped[str] = mapped_column(String(128), index=True)
+    resource_name: Mapped[str] = mapped_column(String(400), default="")
+    stage: Mapped[str] = mapped_column(String(16), index=True)
+    selection_source: Mapped[str] = mapped_column(String(24), default="auto")
+    retrieval_reason: Mapped[str | None] = mapped_column(Text)
+    tool_name: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class AgentRun(Base):

@@ -15,12 +15,13 @@ import {
 } from "lucide-react";
 import { useApp } from "../store/AppContext";
 import { api } from "../lib/api";
-import type { Conversation, Paper, ScopeSelection, Stats } from "../lib/types";
+import type { Conversation, Paper, Project, ProjectItem, ScopeSelection, Stats } from "../lib/types";
 import { cn, MODES, relativeTime, truncate } from "../lib/utils";
 import { Badge, Button, Card, IconButton } from "../components/ui";
 import { ChatEmpty, ChatMessageItem, Composer, useChat } from "../components/Chat";
 import { PaperPicker } from "../components/PaperPicker";
 import { Uploader } from "../components/Uploader";
+import { ContextPicker, EMPTY_RESOURCES, type SelectedResources } from "../components/ContextPicker";
 
 export function Home() {
   const { user, model, toast } = useApp();
@@ -36,10 +37,33 @@ export function Home() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const initialConversation = searchParams.get("conversation");
+  const projectParam = searchParams.get("project");
+  const [activeProject, setActiveProject] = useState<Project | null>(null);
+  const [projectPaperCount, setProjectPaperCount] = useState(0);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [autoRetrieval, setAutoRetrieval] = useState(true);
+  const queryResources = useMemo<SelectedResources>(
+    () => ({
+      knowledge_ids: searchParams.getAll("knowledge"),
+      image_ids: searchParams.getAll("image"),
+      artifact_ids: searchParams.getAll("artifact"),
+      exclude_ids: searchParams.getAll("exclude"),
+    }),
+    [searchParams],
+  );
+  const [selectedResources, setSelectedResources] = useState<SelectedResources>(queryResources);
+  useEffect(() => {
+    setSelectedResources(queryResources);
+  }, [queryResources]);
+  const resourceCount = selectedResources.knowledge_ids.length + selectedResources.image_ids.length + selectedResources.artifact_ids.length;
+  const excludedCount = selectedResources.exclude_ids.length;
 
   const { messages, streaming, paused, send, stop, reset, conversationId, loadConversation, executePlan, updatePlan, pause, resume, cancel } = useChat({
     mode,
     scope,
+    resourceIds: selectedResources,
+    autoRetrieval,
+    projectId: projectParam,
     onConversation: (id) => {
       const params = new URLSearchParams(searchParams);
       params.set("conversation", id);
@@ -74,6 +98,26 @@ export function Home() {
       setSearchParams(params, { replace: true });
     }
   }, [searchParams, reset, setSearchParams]);
+
+  useEffect(() => {
+    if (!projectParam) {
+      setActiveProject(null);
+      setProjectPaperCount(0);
+      return;
+    }
+    let alive = true;
+    api<{ project: Project; items: ProjectItem[] }>("/projects/" + projectParam)
+      .then((response) => {
+        if (!alive) return;
+        setActiveProject(response.project);
+        const paperIds = response.items.filter((item) => item.kind === "paper" && item.ref_id).map((item) => item.ref_id as string);
+        const selectedPapers = paperIds.map((id) => papers.find((paper) => paper.id === id)).filter((paper): paper is Paper => Boolean(paper));
+        setProjectPaperCount(paperIds.length);
+        setScope({ type: "project", ids: [projectParam], label: "项目 · " + response.project.name, papers: selectedPapers });
+      })
+      .catch(() => { if (alive) setActiveProject(null); });
+    return () => { alive = false; };
+  }, [projectParam, papers]);
 
   useEffect(() => {
     if (!initialConversation) return;
@@ -149,7 +193,9 @@ export function Home() {
                 icon={<MessageSquarePlus size={15} />}
                 onClick={() => {
                   reset();
-                  setSearchParams({}, { replace: true });
+                  const params = new URLSearchParams();
+                  if (projectParam) params.set("project", projectParam);
+                  setSearchParams(params, { replace: true });
                   setDraft("");
                 }}
               >
@@ -158,14 +204,25 @@ export function Home() {
             </div>
           </header>
 
+          {activeProject && (
+            <div className="project-chat-banner">
+              <FolderKanban size={16} />
+              <div>
+                <strong>{activeProject.name}</strong>
+                <span>项目研究 · {projectPaperCount} 篇论文</span>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => navigate("/app/projects?project=" + activeProject.id)}>
+                项目详情
+              </Button>
+            </div>
+          )}
+
           {uploadOpen && (
             <div className="home-upload">
               <Uploader
                 compact
-                onUploaded={() => {
-                  setUploadOpen(false);
-                  void refreshLibrary();
-                }}
+                onBatchUploaded={() => void refreshLibrary()}
+                onUploaded={() => setUploadOpen(false)}
               />
             </div>
           )}
@@ -196,6 +253,33 @@ export function Home() {
           </div>
 
           <div className="chat-compose">
+            <div className="context-actions">
+              <label className="context-auto">
+                <input type="checkbox" checked={autoRetrieval} onChange={(event) => setAutoRetrieval(event.target.checked)} />
+                自动检索
+              </label>
+              <button className="context-trigger" onClick={() => setContextOpen(true)}>
+                {resourceCount > 0 || excludedCount > 0
+                  ? "本次指定上下文：知识 " + selectedResources.knowledge_ids.length + " · 图片 " + selectedResources.image_ids.length + " · 成果 " + selectedResources.artifact_ids.length + (excludedCount ? " · 排除 " + excludedCount : "")
+                  : "+ 选择本次研究资料"}
+              </button>
+              {(resourceCount > 0 || excludedCount > 0) && (
+                <button
+                  className="context-clear"
+                  onClick={() => {
+                    setSelectedResources(EMPTY_RESOURCES);
+                    const params = new URLSearchParams(searchParams);
+                    params.delete("knowledge");
+                    params.delete("image");
+                    params.delete("artifact");
+                    params.delete("exclude");
+                    setSearchParams(params, { replace: true });
+                  }}
+                >
+                  清除
+                </button>
+              )}
+            </div>
             <Composer
               value={draft}
               onChange={setDraft}
@@ -355,6 +439,13 @@ export function Home() {
           }
           toast("研究范围已更新", "success");
         }}
+      />
+
+      <ContextPicker
+        open={contextOpen}
+        selected={selectedResources}
+        onClose={() => setContextOpen(false)}
+        onApply={setSelectedResources}
       />
 
       <button className="fab-new" onClick={() => { reset(); setSearchParams({}, { replace: true }); }}>

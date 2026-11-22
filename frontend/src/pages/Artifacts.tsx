@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
+  ChevronDown,
   Download,
   FileCheck2,
   FileText,
   Loader2,
-  RefreshCw,
+  Save,
   ScrollText,
   ShieldCheck,
 } from "lucide-react";
@@ -15,8 +16,10 @@ import { api, downloadFile } from "../lib/api";
 import type {
   AcademicArtifact,
   ArtifactKind,
+  ArtifactPreflight,
   ArtifactQuality,
   Collection,
+  Paper,
   Project,
 } from "../lib/types";
 import { cn, truncate } from "../lib/utils";
@@ -33,34 +36,46 @@ export function Artifacts() {
   const [quality, setQuality] = useState<ArtifactQuality | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [papers, setPapers] = useState<Paper[]>([]);
+  const [selectedPaperId, setSelectedPaperId] = useState("");
+  const [preflight, setPreflight] = useState<ArtifactPreflight | null>(null);
+  const [savingKnowledge, setSavingKnowledge] = useState(false);
   const [scopeType, setScopeType] = useState("all");
   const [scopeId, setScopeId] = useState("");
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [exporting, setExporting] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
 
   const loadArtifacts = useCallback(async () => {
     try {
       const response = await api<{ items: AcademicArtifact[] }>("/artifacts?limit=50");
       setArtifacts(response.items);
-      if (!selectedId && response.items.length > 0) setSelectedId(response.items[0].id);
+      return response.items;
     } catch (error) {
       toast((error as Error).message || "无法加载成果", "error");
+      return [];
     }
-  }, [selectedId, toast]);
+  }, [toast]);
 
   useEffect(() => {
     void Promise.all([
       api<{ items: ArtifactKind[] }>("/artifacts/kinds"),
       api<{ items: Project[] }>("/projects"),
       api<{ items: Collection[] }>("/collections"),
-    ]).then(([kindResponse, projectResponse, collectionResponse]) => {
+      api<{ items: Paper[] }>("/papers?limit=100"),
+    ]).then(([kindResponse, projectResponse, collectionResponse, paperResponse]) => {
       setKinds(kindResponse.items);
       setProjects(projectResponse.items);
       setCollections(collectionResponse.items);
+      setPapers(paperResponse.items);
+      const firstReady = paperResponse.items.find((paper) => paper.status === "ready");
+      if (firstReady) setSelectedPaperId(firstReady.id);
     }).catch(() => undefined);
-    void loadArtifacts().finally(() => setLoading(false));
+    void loadArtifacts().then((items) => {
+      if (items.length > 0) setSelectedId((current) => current || items[0].id);
+    }).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -77,25 +92,94 @@ export function Artifacts() {
   }, [toast]);
 
   useEffect(() => {
+    const focus = searchParams.get("focus");
+    if (focus && focus !== selectedId) setSelectedId(focus);
+  }, [searchParams]);
+
+  useEffect(() => {
     if (selectedId) void loadDetail(selectedId);
   }, [selectedId, loadDetail]);
 
-  async function generate(kind: string) {
+  useEffect(() => {
+    if (!selectedPaperId) {
+      setPreflight(null);
+      return;
+    }
+    let active = true;
+    api<{ preflight: ArtifactPreflight }>("/artifacts/preflight?paper_id=" + selectedPaperId)
+      .then((response) => { if (active) setPreflight(response.preflight); })
+      .catch(() => { if (active) setPreflight(null); });
+    return () => { active = false; };
+  }, [selectedPaperId]);
+
+  async function generate(kind: string, bodyOverride?: Record<string, unknown>) {
     setGenerating(kind);
     try {
       const response = await api<{ artifact: AcademicArtifact; quality: ArtifactQuality }>("/artifacts/generate", {
         method: "POST",
-        body: { kind, scope_type: scopeType, scope_id: scopeId || null },
+        body: bodyOverride || { kind, scope_type: scopeType, scope_id: scopeId || null },
       });
       setArtifact(response.artifact);
       setQuality(response.quality);
       setSelectedId(response.artifact.id);
       await loadArtifacts();
-      toast("成果已生成并完成质检", "success");
+      if (response.quality?.status === "fail") {
+        toast("已生成草稿，但质检未通过；请查看下方问题", "error");
+      } else if (response.quality?.status === "warning") {
+        toast("知识内容已生成，存在需要人工核对的风险", "info");
+      } else {
+        toast("内容已生成并通过质检", "success");
+      }
+      return response.artifact;
     } catch (error) {
       toast((error as Error).message || "生成失败", "error");
+      return null;
     } finally {
       setGenerating(null);
+    }
+  }
+
+  async function generateKnowledgePack() {
+    if (!selectedPaperId) {
+      toast("请先选择一篇论文", "info");
+      return;
+    }
+    // Clear the old advanced draft so a failed pack generation cannot be
+    // mistaken for a knowledge pack bound to the whole library.
+    setArtifact(null);
+    setQuality(null);
+    const result = await generate("knowledge_pack", {
+      kind: "knowledge_pack",
+      scope_type: "papers",
+      paper_ids: [selectedPaperId],
+    });
+    if (result) {
+      setSelectedId(result.id);
+    }
+  }
+
+  async function regenerateArtifact() {
+    if (!artifact) return;
+    await generate(artifact.kind, {
+      kind: artifact.kind,
+      scope_type: artifact.scope_type === "papers" ? "papers" : artifact.scope_type,
+      scope_id: artifact.scope_type === "papers" ? null : (artifact.scope_ids?.[0] || null),
+      paper_ids: artifact.paper_ids || [],
+    });
+  }
+
+  async function saveToKnowledge() {
+    if (!artifact || artifact.kind !== "knowledge_pack") return;
+    setSavingKnowledge(true);
+    try {
+      const response = await api<{ artifact: AcademicArtifact; count: number }>("/artifacts/" + artifact.id + "/save-to-knowledge", { method: "POST" });
+      setArtifact(response.artifact);
+      await loadArtifacts();
+      toast("已存入知识库 " + response.count + " 条", "success");
+    } catch (error) {
+      toast((error as Error).message || "保存到知识库失败", "error");
+    } finally {
+      setSavingKnowledge(false);
     }
   }
 
@@ -141,62 +225,115 @@ export function Artifacts() {
   );
 
   const qualityTone = quality?.status === "pass" ? "accent" : quality?.status === "fail" ? "danger" : "warn";
+  const builderPack = artifact?.kind === "knowledge_pack" && selectedPaperId && (artifact.paper_ids || []).includes(selectedPaperId) ? artifact : null;
 
   return (
     <div className="page page-artifacts">
       <header className="page-head">
         <div>
-          <span className="eyebrow"><ScrollText size={12} /> Academic artifacts</span>
-          <h1>学术成果工作台</h1>
-          <p>从资料库生成八类带证据的学术初稿；每一份都经过引用、quote、格式与重复检查。</p>
+          <span className="eyebrow"><ScrollText size={12} /> Paper knowledge</span>
+          <h1>论文知识包</h1>
+          <p>选一篇论文，生成可追溯知识包并存入知识库。</p>
         </div>
         <Badge tone="accent">本地确定性生成</Badge>
       </header>
 
-      <Card className="artifact-scope">
-        <div>
-          <span className="artifact-scope-label">研究范围</span>
-          <Select
-            value={scopeType === "all" ? "all" : scopeType + ":" + scopeId}
-            onChange={(event) => {
-              const value = event.target.value;
-              if (value === "all") {
-                setScopeType("all");
-                setScopeId("");
-              } else {
-                const [type, id] = value.split(":");
-                setScopeType(type);
-                setScopeId(id);
-              }
-            }}
-          >
-            {scopeOptions.map((option) => <option key={option.value} value={option.value}>{truncate(option.label, 50)}</option>)}
-          </Select>
-          <span className="muted small">只使用资料库内论文；不引入外部文献。</span>
+      <Card className="artifact-builder">
+        <div className="artifact-builder-row">
+          <div className="artifact-builder-scope">
+            <span className="artifact-scope-label">目标论文</span>
+            <Select value={selectedPaperId} onChange={(event) => setSelectedPaperId(event.target.value)}>
+              <option value="">选择一篇论文</option>
+              {papers.map((paper) => (
+                <option key={paper.id} value={paper.id}>{truncate(paper.title, 68)}{paper.year ? " · " + paper.year : ""}</option>
+              ))}
+            </Select>
+          </div>
+          <div className={cn("artifact-preflight-inline", preflight?.ready ? "ready" : "blocked")}>
+            <strong>{preflight ? (preflight.ready ? "可生成" : "不可生成") : "等待选择"}</strong>
+            {preflight?.ready ? (
+              <span>{preflight.pages} 页 · {preflight.chunks} 片段</span>
+            ) : (
+              <span>{preflight?.message || "先选择一篇已解析论文"}</span>
+            )}
+          </div>
         </div>
-        <Button variant="ghost" icon={<RefreshCw size={14} />} onClick={() => { void loadArtifacts(); if (selectedId) void loadDetail(selectedId); }}>
-          刷新
-        </Button>
+
+        <p className="artifact-builder-summary">生成：论文速览、研究问题、方法与数据、主要发现、局限、知识卡、证据表</p>
+
+        <div className="artifact-builder-actions">
+          <Button
+            variant="primary"
+            loading={generating === "knowledge_pack"}
+            disabled={!preflight?.ready}
+            onClick={() => void generateKnowledgePack()}
+          >
+            生成知识包
+          </Button>
+          {builderPack && (
+            <Button
+              variant={builderPack.knowledge_saved ? "soft" : "secondary"}
+              icon={<Save size={14} />}
+              loading={savingKnowledge}
+              disabled={builderPack.knowledge_saved}
+              onClick={() => void saveToKnowledge()}
+            >
+              {builderPack.knowledge_saved ? "已存入知识库" : "保存到知识库"}
+            </Button>
+          )}
+          <Button variant="ghost" icon={<ScrollText size={14} />} onClick={() => navigate("/app/knowledge")}>
+            查看知识库
+          </Button>
+        </div>
       </Card>
 
-      <div className="artifact-kinds">
-        {kinds.map((kind) => (
-          <Card key={kind.id} className={cn("artifact-kind-card", generating === kind.id && "generating")}>
-            <div className="artifact-kind-icon"><FileText size={16} /></div>
-            <strong>{kind.label}</strong>
-            <p>{kind.description}</p>
-            <Button
-              size="sm"
-              variant="secondary"
-              loading={generating === kind.id}
-              disabled={Boolean(generating) && generating !== kind.id}
-              onClick={() => void generate(kind.id)}
+      <details className="artifact-advanced" open>
+        <summary>
+          <span><FileText size={14} /> 高级写作草稿</span>
+          <small>多论文文献综述、开题、实验设计、PPT 大纲</small>
+          <ChevronDown size={15} />
+        </summary>
+        <Card className="artifact-scope">
+          <div>
+            <span className="artifact-scope-label">研究范围</span>
+            <Select
+              value={scopeType === "all" ? "all" : scopeType + ":" + scopeId}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value === "all") {
+                  setScopeType("all");
+                  setScopeId("");
+                } else {
+                  const [type, id] = value.split(":");
+                  setScopeType(type);
+                  setScopeId(id);
+                }
+              }}
             >
-              生成
-            </Button>
-          </Card>
-        ))}
-      </div>
+              {scopeOptions.map((option) => <option key={option.value} value={option.value}>{truncate(option.label, 50)}</option>)}
+            </Select>
+            <span className="muted small">只使用资料库内论文；不引入外部文献。扫描件会被自动排除。</span>
+          </div>
+        </Card>
+        <div className="artifact-kinds">
+          {kinds.filter((kind) => kind.id !== "knowledge_pack").map((kind) => (
+            <Card key={kind.id} className={cn("artifact-kind-card", generating === kind.id && "generating")}>
+              <div className="artifact-kind-icon"><FileText size={16} /></div>
+              <strong>{kind.label}</strong>
+              <p>{kind.description}</p>
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={generating === kind.id}
+                disabled={Boolean(generating) && generating !== kind.id}
+                onClick={() => void generate(kind.id)}
+              >
+                生成
+              </Button>
+            </Card>
+          ))}
+        </div>
+      </details>
 
       <div className="artifact-layout">
         <Card className="artifact-history">
@@ -225,7 +362,7 @@ export function Artifacts() {
 
         <div className="artifact-main">
           {!artifact ? (
-            <EmptyState icon={<FileCheck2 size={28} />} title="选择一种成果生成" description="八类成果都带范围声明与证据表；本地模式不使用外部文献。" />
+            <EmptyState icon={<FileCheck2 size={28} />} title="选择论文生成知识包" description="在上方选择论文，一键生成摘要、问题、方法、发现、局限与可引用证据，并保存到知识库。" />
           ) : (
             <>
               <Card className="artifact-preview">
@@ -236,8 +373,21 @@ export function Artifacts() {
                     <p>{artifact.scope_statement}</p>
                   </div>
                   <div className="artifact-actions">
+                    {artifact && (
+                      <Button size="sm" variant="soft" onClick={() => navigate("/app?artifact=" + encodeURIComponent(artifact.id))}>
+                        在 Chat 中使用
+                      </Button>
+                    )}
                     <Badge tone={qualityTone}>{quality?.status === "pass" ? "质检通过" : quality?.status === "fail" ? "质检失败" : "有风险"}</Badge>
                     <Button size="sm" variant="ghost" icon={<ShieldCheck size={13} />} loading={checking} onClick={() => void recheck()}>重新质检</Button>
+                    {quality?.status === "fail" && (
+                      <Button size="sm" variant="secondary" loading={generating === artifact.kind} onClick={() => void regenerateArtifact()}>重新生成</Button>
+                    )}
+                    {artifact.kind === "knowledge_pack" && (
+                      <Button size="sm" variant={artifact.knowledge_saved ? "soft" : "secondary"} icon={<Save size={13} />} loading={savingKnowledge} disabled={artifact.knowledge_saved} onClick={() => void saveToKnowledge()}>
+                        {artifact.knowledge_saved ? "已存入知识库" : "保存到知识库"}
+                      </Button>
+                    )}
                   </div>
                 </div>
                 <div className="artifact-export-row">
@@ -283,6 +433,7 @@ export function Artifacts() {
                   </div>
                 </div>
                 <p className="muted small">{quality?.summary}</p>
+                {quality?.status === "fail" && <p className="muted small">该成果可能来自旧解析或旧引用；点击上方“重新生成”会用当前论文重新提取证据。</p>}
                 {quality && quality.issues.length > 0 ? (
                   <div className="artifact-issues">
                     {quality.issues.map((issue, index) => (

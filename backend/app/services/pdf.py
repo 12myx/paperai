@@ -375,12 +375,19 @@ def extract_pdf(data: bytes, max_pages: int = 400) -> ParsedPaper:
             if not markdown.strip():
                 continue
             rect = getattr(table, "bbox", None) or (0, 0, 0, 0)
+            table_png = None
+            try:
+                clip = pymupdf.Rect(rect)
+                if clip.width > 1 and clip.height > 1:
+                    table_png = page.get_pixmap(clip=clip, matrix=pymupdf.Matrix(1.7, 1.7)).tobytes("png")
+            except Exception:  # noqa: BLE001 - table text still remains useful
+                table_png = None
             figure_index += 1
             figures.append(
                 {
                     "page_number": page_index + 1,
                     "order_index": figure_index,
-                    "data": None,
+                    "data": table_png,
                     "ext": "png",
                     "width": max(1, rect[2] - rect[0]),
                     "height": max(1, rect[3] - rect[1]),

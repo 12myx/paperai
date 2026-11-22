@@ -25,8 +25,8 @@ import {
 } from "lucide-react";
 import { useApp } from "../store/AppContext";
 import { useEvidence } from "../store/EvidenceContext";
-import { api, copyText, streamChat, streamTask, uploadPdf } from "../lib/api";
-import type { AgentPlanStep, AgentSelfCheck, AgentStep, AgentTask, ChatMessage, Citation, PendingAction, ScopeSelection, StreamEvent } from "../lib/types";
+import { ApiError, api, copyText, streamChat, streamTask, uploadPdf } from "../lib/api";
+import type { AgentPlanStep, AgentSelfCheck, AgentStep, AgentTask, ChatMessage, Citation, PendingAction, ResourceUsage, ScopeSelection, StreamEvent } from "../lib/types";
 import { cn, MODES, truncate } from "../lib/utils";
 import { Badge, Button, IconButton, Spinner } from "./ui";
 import { MarkdownView } from "./Markdown";
@@ -43,10 +43,16 @@ function shouldPlan(message: string, mode: string): boolean {
 export function useChat({
   mode,
   scope,
+  resourceIds,
+  autoRetrieval = true,
+  projectId,
   onConversation,
 }: {
   mode: string;
   scope: ScopeSelection;
+  resourceIds?: { knowledge_ids?: string[]; image_ids?: string[]; artifact_ids?: string[]; exclude_ids?: string[] };
+  autoRetrieval?: boolean;
+  projectId?: string | null;
   onConversation?: (id: string) => void;
 }) {
   const { toast } = useApp();
@@ -55,6 +61,14 @@ export function useChat({
   const [streaming, setStreaming] = useState(false);
   const [paused, setPaused] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const resourceRef = useRef(resourceIds);
+  const autoRef = useRef(autoRetrieval);
+  const projectRef = useRef(projectId);
+  useEffect(() => {
+    resourceRef.current = resourceIds;
+    autoRef.current = autoRetrieval;
+    projectRef.current = projectId;
+  }, [resourceIds, autoRetrieval, projectId]);
   const pendingRef = useRef<string>("");
   const taskRef = useRef<string>("");
   const modeRef = useRef(mode);
@@ -171,10 +185,12 @@ export function useChat({
         break;
       case "done":
         setPaused(false);
+        const finishedRunId = String(event.run_id || "");
         updateMessage(pendingId, (message) => ({
           ...message,
           serverId: String(event.message_id || message.serverId || ""),
           taskId: event.task_id ? String(event.task_id) : message.taskId,
+          runId: finishedRunId || message.runId,
           content: String(event.content || message.content),
           citations: (event.citations as Citation[]) || [],
           actions: (event.actions as PendingAction[]) || message.actions || [],
@@ -182,6 +198,11 @@ export function useChat({
           streaming: false,
           planState: "completed",
         }));
+        if (finishedRunId) {
+          void api<{ items: ResourceUsage[] }>("/agent/runs/" + finishedRunId + "/resources")
+            .then((response) => updateMessage(pendingId, (message) => ({ ...message, resourceUsage: response.items })))
+            .catch(() => undefined);
+        }
         break;
       default:
         break;
@@ -226,6 +247,12 @@ export function useChat({
               mode: modeRef.current,
               scope_type: currentScope.type,
               scope_ids: currentScope.ids,
+              project_id: projectRef.current || null,
+              knowledge_ids: resourceRef.current?.knowledge_ids || [],
+              image_ids: resourceRef.current?.image_ids || [],
+              artifact_ids: resourceRef.current?.artifact_ids || [],
+              exclude_ids: resourceRef.current?.exclude_ids || [],
+              auto_retrieval: autoRef.current,
             },
           });
           setConversationId(plan.conversation_id);
@@ -263,6 +290,12 @@ export function useChat({
           mode: modeRef.current,
           scope_type: currentScope.type,
           scope_ids: currentScope.ids,
+          project_id: projectRef.current || null,
+          knowledge_ids: resourceRef.current?.knowledge_ids || [],
+          image_ids: resourceRef.current?.image_ids || [],
+          artifact_ids: resourceRef.current?.artifact_ids || [],
+          exclude_ids: resourceRef.current?.exclude_ids || [],
+          auto_retrieval: autoRef.current,
         },
         {
           signal: controller.signal,
@@ -423,7 +456,32 @@ export function ChatMessageItem({
   const { openEvidence } = useEvidence();
   const navigate = useNavigate();
   const [saved, setSaved] = useState(false);
+  const [duplicate, setDuplicate] = useState<{ id: string; title: string; score?: number } | null>(null);
   const [expanded, setExpanded] = useState(false);
+
+  const openCitation = (citation: Citation) => {
+    if (citation.resource_type === "knowledge" && citation.resource_id) {
+      navigate("/app/knowledge?focus=" + encodeURIComponent(citation.resource_id));
+      return;
+    }
+    if (citation.resource_type === "image" && citation.resource_id) {
+      navigate("/app/figures?focus=" + encodeURIComponent(citation.resource_id));
+      return;
+    }
+    if (citation.resource_type === "artifact" && citation.resource_id) {
+      navigate("/app/artifacts?focus=" + encodeURIComponent(citation.resource_id));
+      return;
+    }
+    if (citation.resource_type === "project" && citation.resource_id) {
+      navigate("/app/projects?project=" + encodeURIComponent(citation.resource_id));
+      return;
+    }
+    if (!citation.paper_id) return;
+    const params = new URLSearchParams();
+    params.set("page", String(citation.page));
+    if (citation.chunk_id) params.set("chunk", citation.chunk_id);
+    navigate("/app/papers/" + citation.paper_id + "?" + params.toString());
+  };
 
   const handleCite = (key: string) => {
     const citation = message.citations?.find((item) => item.key === key);
@@ -431,10 +489,7 @@ export function ChatMessageItem({
       onCite?.(key);
       return;
     }
-    const params = new URLSearchParams();
-    params.set("page", String(citation.page));
-    if (citation.chunk_id) params.set("chunk", citation.chunk_id);
-    navigate("/app/papers/" + citation.paper_id + "?" + params.toString());
+    openCitation(citation);
   };
 
   if (message.role === "user") {
@@ -460,8 +515,23 @@ export function ChatMessageItem({
       });
       setSaved(true);
       toast("已保存到知识库", "success");
-    } catch {
-      toast("保存失败，请重试", "error");
+    } catch (error) {
+      const apiError = error instanceof ApiError ? error : null;
+      const detail = apiError?.detail as {
+        code?: string;
+        score?: number;
+        candidate?: { id?: string; title?: string };
+      } | undefined;
+      if (apiError?.status === 409 && detail?.code === "duplicate_knowledge" && detail.candidate?.id) {
+        setDuplicate({
+          id: detail.candidate.id,
+          title: detail.candidate.title || "已有知识条目",
+          score: detail.score,
+        });
+        toast("内容已存在于知识库", "info");
+        return;
+      }
+      toast(apiError?.message || "保存失败，请重试", "error");
     }
   }
 
@@ -513,6 +583,8 @@ export function ChatMessageItem({
           </div>
         )}
 
+        {!message.streaming && <ResourceUsagePanel rows={message.resourceUsage || []} />}
+
         {message.citations && message.citations.length > 0 && (
           <div className="sources">
             <div className="sources-head">
@@ -532,12 +604,7 @@ export function ChatMessageItem({
                 <SourceCard
                   key={citation.key + citation.chunk_id}
                   citation={citation}
-                  onOpen={() => {
-                    const params = new URLSearchParams();
-                    params.set("page", String(citation.page));
-                    if (citation.chunk_id) params.set("chunk", citation.chunk_id);
-                    navigate("/app/papers/" + citation.paper_id + "?" + params.toString());
-                  }}
+                  onOpen={() => openCitation(citation)}
                 />
               ))}
               {!expanded && message.citations.length > 3 && (
@@ -560,15 +627,24 @@ export function ChatMessageItem({
             >
               <Copy size={13} /> 复制
             </button>
-            <button onClick={saveToKnowledge} disabled={saved}>
+            <button onClick={saveToKnowledge} disabled={saved || Boolean(duplicate)}>
               {saved ? <Check size={13} /> : <BookmarkPlus size={13} />}
-              {saved ? "已保存" : "保存到知识库"}
+              {saved ? "已保存" : duplicate ? "内容已存在" : "保存到知识库"}
             </button>
             {showRegenerate && onRegenerate && (
               <button onClick={onRegenerate}>
                 <RefreshCw size={13} /> 重新生成
               </button>
             )}
+          </div>
+        )}
+
+        {duplicate && (
+          <div className="knowledge-duplicate">
+            <span>已存在相似知识{duplicate.score ? "（" + Math.round(duplicate.score * 100) + "%）" : ""}：{truncate(duplicate.title, 48)}</span>
+            <button onClick={() => navigate("/app/knowledge?focus=" + encodeURIComponent(duplicate.id))}>
+              打开已有条目
+            </button>
           </div>
         )}
       </div>
@@ -750,6 +826,39 @@ function AgentTimeline({ steps }: { steps: AgentStep[] }) {
   );
 }
 
+function ResourceUsagePanel({ rows }: { rows: ResourceUsage[] }) {
+  if (!rows.length) return null;
+  const groups: { stage: ResourceUsage["stage"]; label: string }[] = [
+    { stage: "included", label: "进入上下文" },
+    { stage: "read", label: "工具读取" },
+    { stage: "referenced", label: "回答引用" },
+    { stage: "retrieved", label: "检索到" },
+  ];
+  return (
+    <details className="usage-panel">
+      <summary>本次研究资料 · {new Set(rows.map((row) => row.resource_type + row.resource_id)).size} 项</summary>
+      <div className="usage-grid">
+        {groups.map((group) => {
+          const items = rows.filter((row) => row.stage === group.stage);
+          if (!items.length) return null;
+          return (
+            <div key={group.stage} className="usage-group">
+              <strong>{group.label} <span>{items.length}</span></strong>
+              {items.slice(0, 8).map((row) => (
+                <div key={row.id} className="usage-row" title={row.resource_id}>
+                  <span className={"usage-type usage-" + row.resource_type}>{row.resource_type}</span>
+                  <span>{truncate(row.resource_name || row.resource_id, 34)}</span>
+                  <small>{row.selection_source}</small>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
 function SourceCard({ citation, onOpen }: { citation: Citation; onOpen: () => void }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -759,7 +868,13 @@ function SourceCard({ citation, onOpen }: { citation: Citation; onOpen: () => vo
         <button className="source-title" onClick={onOpen} title={citation.paper_title}>
           {truncate(citation.paper_title, 64)}
         </button>
-        <span className="source-page">p.{citation.page}</span>
+        <span className="source-page">
+          {citation.resource_type === "knowledge" ? "知识"
+            : citation.resource_type === "image" ? "图 p." + citation.page
+            : citation.resource_type === "artifact" ? "成果"
+            : citation.resource_type === "project" ? "项目"
+            : "p." + citation.page}
+        </span>
       </div>
       <p className={cn("source-quote", expanded && "source-quote-open")}>{citation.quote}</p>
       <div className="source-foot">
@@ -788,7 +903,7 @@ function ActionCard({ action, onDone }: { action: PendingAction; onDone?: () => 
     try {
       const response = await api<{ result: { data: Record<string, unknown>; summary: string } }>("/agent/actions/confirm", {
         method: "POST",
-        body: { tool: action.tool, args: action.args },
+        body: { tool: action.tool, args: action.args, action_id: action.action_id },
       });
       setResult(response.result.data);
       setState("done");

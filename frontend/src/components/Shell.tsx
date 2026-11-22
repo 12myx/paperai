@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import type { KnowledgeItem, Paper, Project } from "../lib/types";
 import {
@@ -29,8 +29,10 @@ import {
 import { useApp } from "../store/AppContext";
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
+import { USAGE_CHANGED_EVENT } from "../lib/events";
 import { Avatar, IconButton, Input, Modal } from "./ui";
 import { Onboarding } from "./Onboarding";
+import { UploadResultNotice } from "./Uploader";
 
 const NAV = [
   { to: "/app", label: "AI 研究助手", icon: Sparkles, end: true },
@@ -74,8 +76,25 @@ export function Shell() {
     papers: [], knowledge: [], projects: [],
   });
   const [usage, setUsage] = useState<{ papers: number; pages: number; conversations?: number } | null>(null);
+  const usageSeq = useRef(0);
+  const usageAbort = useRef<AbortController | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
+
+  const loadUsage = useCallback(() => {
+    const seq = ++usageSeq.current;
+    usageAbort.current?.abort();
+    const controller = new AbortController();
+    usageAbort.current = controller;
+    api<{ papers: number; pages: number }>("/settings/usage", { signal: controller.signal })
+      .then((data) => {
+        if (seq === usageSeq.current) setUsage(data);
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        if (seq === usageSeq.current) setUsage(null);
+      });
+  }, []);
 
   useEffect(() => {
     setMobileOpen(false);
@@ -142,10 +161,23 @@ export function Shell() {
   }, [searchOpen, searchQuery]);
 
   useEffect(() => {
-    api<{ papers: number; pages: number }>("/settings/usage")
-      .then(setUsage)
-      .catch(() => setUsage(null));
-  }, [location.pathname]);
+    loadUsage();
+  }, [location.pathname, loadUsage]);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const onUsageChanged = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(loadUsage, 120);
+    };
+    window.addEventListener(USAGE_CHANGED_EVENT, onUsageChanged);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener(USAGE_CHANGED_EVENT, onUsageChanged);
+    };
+  }, [loadUsage]);
+
+  useEffect(() => () => usageAbort.current?.abort(), []);
 
   const title =
     TITLES[location.pathname] ||
@@ -370,6 +402,8 @@ export function Shell() {
           )}
         </div>
       </Modal>
+
+      <UploadResultNotice />
 
       {settings && !settings.onboarding_completed && <Onboarding />}
     </div>

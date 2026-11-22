@@ -130,6 +130,14 @@ def figure_out(figure: Figure, paper_title: str | None = None) -> dict[str, Any]
         "saved": figure.saved,
         "table_markdown": figure.table_markdown,
         "image_url": f"/api/figures/{figure.id}/image" if figure.image_path else None,
+        "detected_kind": figure.detected_kind,
+        "quality_score": figure.quality_score,
+        "caption_confidence": figure.caption_confidence,
+        "is_page_snapshot": figure.is_page_snapshot,
+        "ignored": figure.ignored,
+        "review_status": figure.review_status,
+        "visual_status": figure.visual_status,
+        "needs_review": figure.detected_kind in {"unclassified", "page_snapshot"} or figure.quality_score < 55,
         "created_at": iso(figure.created_at) if hasattr(figure, "created_at") else None,
     }
 
@@ -236,6 +244,7 @@ def conversation_out(conversation: Conversation, message_count: int = 0, preview
         "mode": conversation.mode,
         "scope_type": conversation.scope_type,
         "scope_ids": conversation.scope_ids or [],
+        "project_id": conversation.project_id,
         "archived": conversation.archived,
         "message_count": message_count,
         "preview": preview,
@@ -330,7 +339,7 @@ EVIDENCE_TYPE_LABELS = {
 }
 
 
-def evidence_out(evidence: Evidence, paper_title: str | None = None) -> dict[str, Any]:
+def evidence_out(evidence: Evidence, paper_title: str | None = None, context: dict | None = None) -> dict[str, Any]:
     return {
         "id": evidence.id,
         "paper_id": evidence.paper_id,
@@ -351,6 +360,12 @@ def evidence_out(evidence: Evidence, paper_title: str | None = None) -> dict[str
         "can_locate": bool(evidence.paper_id and evidence.page),
         "created_at": iso(evidence.created_at),
         "meta": evidence.meta or {},
+        "source_label": (context or {}).get("source_label"),
+        "source_title": (context or {}).get("source_title"),
+        "source_excerpt": (context or {}).get("source_excerpt"),
+        "source_url": (context or {}).get("source_url"),
+        "source_available": bool((context or {}).get("source_available")),
+        "gap_reason": (context or {}).get("gap_reason"),
     }
 
 def insight_out(insight: ResearchInsight) -> dict[str, Any]:
@@ -425,6 +440,9 @@ def artifact_out(artifact: AcademicArtifact) -> dict[str, Any]:
         "model": artifact.model,
         "quality_score": artifact.quality_score,
         "quality_status": artifact.quality_status,
+        "knowledge_item_ids": artifact.knowledge_item_ids or [],
+        "knowledge_saved_at": iso(artifact.knowledge_saved_at),
+        "knowledge_saved": bool(artifact.knowledge_item_ids),
         "created_at": iso(artifact.created_at),
         "updated_at": iso(artifact.updated_at),
     }

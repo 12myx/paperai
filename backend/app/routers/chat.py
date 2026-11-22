@@ -8,17 +8,17 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import AgentRun, AgentStep, AgentTask, Conversation, Message, User, utcnow
+from ..models import AgentRun, AgentStep, AgentTask, Conversation, Message, Project, User, utcnow
 from ..schemas import AgentTaskPlanRequest, AgentTaskPlanUpdate, ChatStreamRequest, ConfirmActionRequest, ConversationUpdate
 from ..serializers import conversation_out, message_out, run_out, step_out, task_out
 from ..services.agent import ChatRequest, confirm_action, resolve_scope, stream_chat
+from ..services.actions import ActionError, action_status, claim_action, finish_action
+from ..services.tools import WRITE_TOOLS
 from ..services import agent_tasks
+from ..services.resource_usage import list_run_usage
 from ..services.llm import resolve_model_config
 
 router = APIRouter(tags=["chat"])
-
-WRITE_TOOLS = {"save_knowledge", "save_annotation", "export_document"}
-
 
 @router.post("/chat/stream")
 async def chat_stream(payload: ChatStreamRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
@@ -29,6 +29,11 @@ async def chat_stream(payload: ChatStreamRequest, user: User = Depends(get_curre
         scope_type=payload.scope_type,
         scope_ids=payload.scope_ids,
         project_id=payload.project_id,
+        knowledge_ids=payload.knowledge_ids,
+        image_ids=payload.image_ids,
+        artifact_ids=payload.artifact_ids,
+        exclude_ids=payload.exclude_ids,
+        auto_retrieval=payload.auto_retrieval,
         auto_approve_writes=payload.auto_approve_writes,
     )
     return StreamingResponse(
@@ -125,15 +130,39 @@ def get_run(run_id: str, user: User = Depends(get_current_user), db: Session = D
     return {"run": run_out(run), "steps": [step_out(step) for step in steps]}
 
 
+@router.get("/agent/runs/{run_id}/resources")
+def get_run_resources(run_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    run = db.get(AgentRun, run_id)
+    if run is None or run.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "研究记录不存在或无权访问")
+    return {"items": list_run_usage(db, user, run_id)}
+
+
+@router.get("/agent/actions/{action_id}")
+def get_action_status(action_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    record = action_status(db, user.id, action_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "操作记录不存在或无权访问")
+    return {"action": record}
+
+
 @router.post("/agent/actions/confirm")
 async def confirm(payload: ConfirmActionRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     if payload.tool not in WRITE_TOOLS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该操作不需要确认或不被允许")
+    if not payload.action_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "确认令牌缺失，请重新发起操作")
+    try:
+        row = claim_action(db, user.id, payload.tool, payload.args, payload.action_id)
+    except ActionError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     try:
         result = await confirm_action(db, user, payload.tool, payload.args)
     except Exception as exc:  # noqa: BLE001
+        finish_action(db, row.id, status="failed", error=f"{type(exc).__name__}: {str(exc)[:800]}")
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"操作执行失败：{exc}") from exc
-    return {"result": result}
+    finish_action(db, row.id, status="succeeded", summary=str(result.get("summary") or "")[:1000])
+    return {"result": result, "action": {"action_id": row.id, "status": "succeeded"}}
 
 @router.post("/agent/tasks/plan")
 async def plan_task(
@@ -150,6 +179,10 @@ async def plan_task(
         conversation = db.get(Conversation, payload.conversation_id)
         if conversation is None or conversation.user_id != user.id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在或无权访问")
+    if payload.project_id:
+        project = db.get(Project, payload.project_id)
+        if project is None or project.user_id != user.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "项目不存在或无权访问")
     if conversation is None:
         conversation = Conversation(
             user_id=user.id,
@@ -157,6 +190,7 @@ async def plan_task(
             mode=payload.mode,
             scope_type=payload.scope_type,
             scope_ids=payload.scope_ids,
+            project_id=payload.project_id,
         )
         db.add(conversation)
         db.commit()

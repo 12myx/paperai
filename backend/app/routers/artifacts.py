@@ -7,10 +7,11 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import AcademicArtifact, ArtifactQualityReport, User
+from ..models import AcademicArtifact, ArtifactQualityReport, Paper, User
 from ..schemas import ArtifactExportRequest, ArtifactGenerateRequest
-from ..serializers import artifact_out, export_out, quality_out
+from ..serializers import artifact_out, export_out, knowledge_out, quality_out
 from ..services import artifacts
+from ..services.artifact_preflight import paper_preflight
 from ..services.llm import resolve_model_config
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -60,6 +61,14 @@ def list_artifacts(
     return {"items": [artifact_out(row) for row in rows]}
 
 
+@router.get("/preflight")
+def preflight(paper_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    paper = db.get(Paper, paper_id)
+    if paper is None or paper.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "论文不存在或无权访问")
+    return {"preflight": paper_preflight(db, user, paper)}
+
+
 @router.get("/{artifact_id}")
 def get_artifact(artifact_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     artifact = db.get(AcademicArtifact, artifact_id)
@@ -89,6 +98,23 @@ def check_artifact(artifact_id: str, user: User = Depends(get_current_user), db:
     db.commit()
     db.refresh(report)
     return {"quality": quality_out(report), "artifact": artifact_out(artifact)}
+
+
+@router.post("/{artifact_id}/save-to-knowledge")
+def save_to_knowledge(artifact_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    artifact = db.get(AcademicArtifact, artifact_id)
+    if artifact is None or artifact.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "成果不存在或无权访问")
+    try:
+        items, record = artifacts.save_artifact_to_knowledge(db, user, artifact)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    return {
+        "items": [knowledge_out(item) for item in items],
+        "count": len(items),
+        "export": export_out(record) if record else None,
+        "artifact": artifact_out(artifact),
+    }
 
 
 @router.post("/{artifact_id}/export", status_code=status.HTTP_201_CREATED)

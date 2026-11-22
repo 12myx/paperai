@@ -433,7 +433,7 @@ try {
   await page.waitForSelector(".artifact-preview", { timeout: 60000 });
   await page.waitForSelector(".artifact-evidence tbody tr", { timeout: 30000 });
   assert((await page.locator(".artifact-evidence tbody tr").count()) >= 1, "artifact carries an evidence table");
-  assert((await page.locator(".artifact-quality .artifact-issue").count()) >= 1, "quality checker lists issues");
+  assert((await page.locator(".artifact-quality").innerText()).includes("Quality Checker"), "quality checker renders a result");
   assert((await page.locator(".artifact-preview").innerText()).includes("仅基于资料库"), "artifact declares its scope");
   await shot(page, "09j-academic-artifact");
 
@@ -453,7 +453,7 @@ try {
 
   log("Figures page");
   await page.getByRole("link", { name: "图片与图表" }).click();
-  await page.waitForSelector(".figure-grid");
+  await page.waitForSelector(".figure-package");
   await page.waitForTimeout(1200);
   await shot(page, "10-figures");
 

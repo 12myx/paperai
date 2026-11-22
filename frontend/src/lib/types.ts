@@ -120,6 +120,14 @@ export interface Figure {
   saved: boolean;
   table_markdown?: string | null;
   image_url?: string | null;
+  detected_kind?: "figure" | "table" | "page_snapshot" | "unclassified";
+  quality_score?: number;
+  caption_confidence?: number;
+  is_page_snapshot?: boolean;
+  ignored?: boolean;
+  review_status?: "auto" | "confirmed" | "rejected";
+  visual_status?: string;
+  needs_review?: boolean;
 }
 
 export interface Collection {
@@ -198,17 +206,26 @@ export interface ProjectItem {
 
 export interface Citation {
   key: string;
-  chunk_id: string;
-  paper_id: string;
+  chunk_id?: string;
+  paper_id?: string | null;
   paper_title: string;
   paper_year?: number | null;
   section: string;
   page: number;
-  page_end: number;
+  page_end?: number;
   quote: string;
-  score: number;
-  kind: string;
-  tags: string[];
+  score?: number;
+  kind?: string;
+  tags?: string[];
+  resource_type?: "paper" | "knowledge" | "image" | "artifact" | "project";
+  resource_id?: string;
+  resource_title?: string;
+  source_paper_title?: string | null;
+  image_path?: string | null;
+  figure_kind?: string;
+  quality_status?: string;
+  quality_score?: number;
+  progress?: number;
 }
 
 export interface AgentStep {
@@ -224,6 +241,9 @@ export interface AgentStep {
 }
 
 export interface PendingAction {
+  action_id?: string;
+  expires_at?: number;
+  args_digest?: string;
   tool: string;
   args: Record<string, unknown>;
   label: string;
@@ -300,6 +320,20 @@ export interface ChatMessage {
   plan?: AgentPlanStep[];
   planState?: "preview" | "executing" | "paused" | "completed" | "cancelled" | "failed";
   selfCheck?: AgentSelfCheck;
+  runId?: string;
+  resourceUsage?: ResourceUsage[];
+}
+
+export interface ResourceUsage {
+  id: string;
+  resource_type: string;
+  resource_id: string;
+  resource_name: string;
+  stage: "retrieved" | "included" | "read" | "referenced";
+  selection_source: string;
+  retrieval_reason?: string | null;
+  tool_name?: string | null;
+  created_at?: string;
 }
 
 export interface Conversation {
@@ -393,6 +427,12 @@ export interface Evidence {
   can_locate: boolean;
   created_at: string;
   meta: Record<string, unknown>;
+  source_label?: string | null;
+  source_title?: string | null;
+  source_excerpt?: string | null;
+  source_url?: string | null;
+  source_available?: boolean;
+  gap_reason?: string | null;
 }
 
 export interface EvidenceStats {
@@ -717,8 +757,25 @@ export interface AcademicArtifact {
   model?: string | null;
   quality_score: number;
   quality_status: string;
+  knowledge_item_ids?: string[];
+  knowledge_saved_at?: string | null;
+  knowledge_saved?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ArtifactPreflight {
+  paper_id: string;
+  title: string;
+  year?: number | null;
+  status: string;
+  pages: number;
+  chunks: number;
+  chars: number;
+  figures: number;
+  ready: boolean;
+  reason: "ready" | "scanned_pdf" | "too_little_text" | "not_parsed";
+  message: string;
 }
 
 export interface ProcessingJob {

@@ -30,6 +30,7 @@ export function PaperPicker({
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("papers");
+  const initialKey = initialIds.join("|");
 
   useEffect(() => {
     if (!open) return;
@@ -45,7 +46,7 @@ export function PaperPicker({
       })
       .catch(() => toast("无法加载论文列表", "error"))
       .finally(() => setLoading(false));
-  }, [open, initialIds, toast]);
+  }, [open, initialKey, toast]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();

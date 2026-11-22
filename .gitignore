@@ -46,3 +46,5 @@ lt-*
 pinggy-*
 # TypeScript incremental build
 *.tsbuildinfo
+# Local tool scratch (node compile cache)
+.tmp/

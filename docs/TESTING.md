@@ -234,3 +234,37 @@ node run.mjs
 ```
 
 依赖系统 Chrome：`chromium.launch({ channel: "chrome" })`；无需额外下载浏览器。
+
+## V4 unified research context
+
+```text
+cd backend
+python -m pytest tests/test_v4_context.py -q -p no:cacheprovider
+python -m pytest tests -q -p no:cacheprovider
+
+cd ../frontend
+npm run build
+
+cd ../qa
+node run.mjs
+```
+
+V4 tests cover knowledge RAG, project context, real image metadata with explicit vision limitation, artifact generation/check confirmation, and cross-user resource isolation.
+
+## V4.1 real-agent hardening
+
+~~~text
+cd backend
+python -m pytest tests/test_v41_agent_loop.py -q -p no:cacheprovider
+python -m pytest tests/test_v41_vision_security.py -q -p no:cacheprovider
+python -m pytest tests -q -p no:cacheprovider
+~~~
+
+The V4.1 tests use a mock LLM provider and a mock VisionProvider only. They prove the loop, registry, budgets, signed confirmation and image-bytes handoff; they do not prove real model or real vision quality.
+
+Real-model and real-vision smoke scripts are intentionally skipped unless explicit authorization env vars are set:
+
+~~~text
+PAPERLENS_REAL_LLM_AUTHORIZED=1 python backend/scripts/v41_real_llm_smoke.py
+PAPERLENS_REAL_VISION_AUTHORIZED=1 python backend/scripts/v41_vision_smoke.py
+~~~

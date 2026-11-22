@@ -480,9 +480,26 @@ def create_project(payload: ProjectCreate, user: User = Depends(get_current_user
         goal=payload.goal, color=payload.color or "#2F6F62",
     )
     db.add(project)
+    db.flush()
+    paper_ids = list(dict.fromkeys(paper_id for paper_id in payload.paper_ids if paper_id))
+    if paper_ids:
+        papers = list(db.execute(select(Paper).where(Paper.user_id == user.id, Paper.id.in_(paper_ids))).scalars().all())
+        by_id = {paper.id: paper for paper in papers}
+        for paper_id in paper_ids:
+            paper = by_id.get(paper_id)
+            if paper is None:
+                continue
+            db.add(ProjectItem(
+                project_id=project.id, user_id=user.id, kind="paper",
+                ref_id=paper.id, title=paper.title[:390],
+                meta={"year": paper.year},
+            ))
     db.commit()
     db.refresh(project)
-    return {"project": project_out(project)}
+    counts = {}
+    if paper_ids:
+        counts["paper"] = len({paper.id for paper in papers})
+    return {"project": project_out(project, counts)}
 
 
 @router.get("/projects/{project_id}")

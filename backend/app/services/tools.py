@@ -15,7 +15,9 @@ from sqlalchemy import String, cast, or_, select
 from sqlalchemy.orm import Session
 
 from ..models import (
+    AcademicArtifact,
     Annotation,
+    ArtifactQualityReport,
     Chunk,
     Conversation,
     ExportRecord,
@@ -23,13 +25,19 @@ from ..models import (
     KnowledgeItem,
     Message,
     Paper,
+    Project,
+    ProjectItem,
     User,
+    utcnow,
 )
 from . import analysis
 from .export import build_export
 from .llm import LLMClient, LLMError, ModelConfig, system_prompt
 from .rag import search as rag_search
+from .actions import create_action
 from .storage import safe_filename, storage
+from .vision import get_vision_provider
+from . import research_context
 
 TOOL_SPECS = [
     {
@@ -167,6 +175,7 @@ TOOL_SPECS = [
                     "paper_id": {"type": "string"},
                     "page": {"type": "integer"},
                     "tags": {"type": "array", "items": {"type": "string"}},
+                    "project_id": {"type": "string"},
                 },
                 "required": ["title", "content"],
             },
@@ -252,6 +261,178 @@ TOOL_SPECS = [
     {
         "type": "function",
         "function": {
+            "name": "search_knowledge",
+            "description": "搜索用户个人知识库，返回知识标题、内容片段、标签、来源论文和所属项目。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "研究问题或关键词"},
+                    "limit": {"type": "integer", "default": 6},
+                    "project_id": {"type": "string"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_knowledge",
+            "description": "读取用户个人知识库中的完整知识条目。",
+            "parameters": {
+                "type": "object",
+                "properties": {"knowledge_id": {"type": "string"}},
+                "required": ["knowledge_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project_context",
+            "description": "读取当前研究项目的目标、描述、进度、笔记与已关联资源。",
+            "parameters": {
+                "type": "object",
+                "properties": {"project_id": {"type": "string"}},
+                "required": ["project_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_project_resources",
+            "description": "在指定研究项目内检索论文、知识、图片、成果和笔记，严格限制在项目范围内。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "resource_type": {"type": "string", "enum": ["paper", "knowledge", "image", "artifact", "note", "all"], "default": "all"},
+                    "query": {"type": "string", "default": ""},
+                },
+                "required": ["project_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_images",
+            "description": "检索用户图像库中的真实图表/图片，返回图片 id、论文、页码和图注。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "default": ""},
+                    "paper_id": {"type": "string"},
+                    "limit": {"type": "integer", "default": 6},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_image",
+            "description": "读取真实图片文件，返回尺寸、哈希、文件大小和来源；不进行视觉推断。",
+            "parameters": {
+                "type": "object",
+                "properties": {"image_id": {"type": "string"}},
+                "required": ["image_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_image",
+            "description": "请求对图片进行视觉分析。只有配置了真实视觉模型时才可用；未配置时必须明确返回能力限制。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_id": {"type": "string"},
+                    "question": {"type": "string", "default": "解释这张图"},
+                },
+                "required": ["image_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_artifacts",
+            "description": "列出用户已有学术成果（综述、开题报告、研究计划等），可按项目和类型筛选。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "default": ""},
+                    "project_id": {"type": "string"},
+                    "limit": {"type": "integer", "default": 8},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_artifact",
+            "description": "读取一份已有学术成果的正文、质量状态和引用。",
+            "parameters": {
+                "type": "object",
+                "properties": {"artifact_id": {"type": "string"}},
+                "required": ["artifact_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_artifact",
+            "description": "基于论文证据生成一份学术成果并保存到成果库。这是写操作，需要用户确认。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["literature_review", "reading_report", "comparison_report", "direction_analysis", "proposal_draft", "research_plan", "experiment_design", "ppt_outline"]},
+                    "title": {"type": "string"},
+                    "scope_type": {"type": "string", "default": "papers"},
+                    "scope_id": {"type": "string"},
+                    "paper_ids": {"type": "array", "items": {"type": "string"}},
+                    "knowledge_ids": {"type": "array", "items": {"type": "string"}},
+                    "image_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["kind"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_artifact",
+            "description": "检查学术成果的结构、证据、引用、逻辑和格式问题，返回问题位置与修改建议。",
+            "parameters": {
+                "type": "object",
+                "properties": {"artifact_id": {"type": "string"}},
+                "required": ["artifact_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_artifact",
+            "description": "将已有学术成果导出为 md/pdf/docx 文件。这是写操作，需要用户确认。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "format": {"type": "string", "enum": ["md", "pdf", "docx"], "default": "md"},
+                },
+                "required": ["artifact_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_research_history",
             "description": "检索用户过往的研究对话与结论。",
             "parameters": {
@@ -267,6 +448,18 @@ TOOL_SPECS = [
 ]
 
 
+
+WRITE_TOOLS = {"save_knowledge", "save_annotation", "export_document", "generate_artifact", "export_artifact"}
+TOOL_NAMES = {
+    "search_papers", "read_paper", "retrieve_chunks", "summarize_paper", "translate_content",
+    "compare_papers", "research_intelligence", "extract_knowledge", "save_knowledge",
+    "save_annotation", "extract_figures", "analyze_research_gap", "generate_report",
+    "export_document", "search_research_history", "search_knowledge", "read_knowledge",
+    "get_project_context", "search_project_resources", "search_images", "read_image",
+    "analyze_image", "list_artifacts", "read_artifact", "generate_artifact",
+    "check_artifact", "export_artifact",
+}
+
 class ToolError(RuntimeError):
     pass
 
@@ -279,12 +472,17 @@ class ToolRunner:
         config: ModelConfig | None,
         scope_ids: list[str] | None = None,
         allow_writes: bool = False,
+        exclude_ids: list[str] | None = None,
+        auto_retrieval: bool = True,
     ) -> None:
         self.db = db
         self.user = user
         self.config = config
         self.scope_ids = scope_ids
         self.allow_writes = allow_writes
+        self.exclude_ids = set(exclude_ids or [])
+        self.auto_retrieval = auto_retrieval
+        self.vision_provider = get_vision_provider(config)
         self.counter = 0
         self.citations: list[dict] = []
 
@@ -312,11 +510,11 @@ class ToolRunner:
 
     def _scoped_ids(self, requested: list[str] | None) -> list[str] | None:
         if requested is None:
-            return None if self.scope_ids is None else list(self.scope_ids)
+            return None if self.scope_ids is None else [item for item in self.scope_ids if item not in self.exclude_ids]
         if self.scope_ids is None:
-            return list(dict.fromkeys(requested))
+            return [item for item in dict.fromkeys(requested) if item not in self.exclude_ids]
         allowed = set(self.scope_ids)
-        return [paper_id for paper_id in dict.fromkeys(requested) if paper_id in allowed]
+        return [item for item in dict.fromkeys(requested) if item in allowed and item not in self.exclude_ids]
 
     def _papers(self, paper_ids: list[str] | None) -> list[Paper]:
         ids = self._scoped_ids(paper_ids)
@@ -326,6 +524,8 @@ class ToolRunner:
         return list(self.db.execute(query.order_by(Paper.created_at)).scalars().all())
 
     def _paper(self, paper_id: str) -> Paper:
+        if paper_id in self.exclude_ids:
+            raise ToolError("该论文已被用户排除，不能读取")
         paper = self.db.get(Paper, paper_id)
         if paper is None or paper.user_id != self.user.id:
             raise ToolError("未找到该论文，或无权访问")
@@ -336,9 +536,10 @@ class ToolRunner:
     def _guard(self, name: str, args: dict, label: str, preview: str) -> dict:
         if self.allow_writes:
             return {}
+        token = create_action(self.db, self.user, name, args)
         return {
             "pending": True,
-            "action": {"tool": name, "args": args, "label": label, "preview": preview[:1200]},
+            "action": {"tool": name, "args": args, "label": label, "preview": preview[:1200], **token},
             "summary": f"已生成待确认操作：{label}。请用户在界面中确认后执行。",
             "citations": [],
             "data": {},
@@ -346,6 +547,8 @@ class ToolRunner:
 
     # ------------------------------------------------------------------ tools
     async def run(self, name: str, args: dict) -> dict:
+        if name not in TOOL_NAMES:
+            raise ToolError(f"未知工具：{name}")
         handler = getattr(self, f"tool_{name}", None)
         if handler is None:
             raise ToolError(f"未知工具：{name}")
@@ -356,6 +559,8 @@ class ToolRunner:
         return self._register(result)
 
     async def tool_search_papers(self, query: str, limit: int = 8) -> dict:
+        if not self.auto_retrieval:
+            raise ToolError("自动检索已关闭，请由用户显式选择资料")
         pattern = f"%{query.strip()}%"
         query_stmt = select(Paper).where(
             Paper.user_id == self.user.id,
@@ -421,6 +626,8 @@ class ToolRunner:
         return {"summary": header + "\n\n".join(blocks), "citations": citations, "data": {"paper_id": paper.id, "sections": list(sections)}}
 
     async def tool_retrieve_chunks(self, query: str, paper_ids: list[str] | None = None, top_k: int = 8) -> dict:
+        if not self.auto_retrieval:
+            raise ToolError("自动检索已关闭，请由用户显式选择资料")
         ids = self._scoped_ids(paper_ids)
         if ids is not None and not ids:
             return {"summary": "所选研究范围内没有可检索的论文。", "citations": [], "data": {"count": 0}}
@@ -534,12 +741,12 @@ class ToolRunner:
     async def tool_save_knowledge(
         self, title: str, content: str, kind: str = "note",
         paper_id: str | None = None, page: int | None = None, tags: list[str] | None = None,
-        force: bool = False,
+        project_id: str | None = None, force: bool = False,
     ) -> dict:
         from .knowledge import DUPLICATE_THRESHOLD, find_duplicate
         candidate, score = find_duplicate(self.db, self.user, title, content)
         if candidate is not None and score >= DUPLICATE_THRESHOLD and not force:
-            args = {"title": title, "content": content, "kind": kind, "paper_id": paper_id, "page": page, "tags": tags or [], "force": True}
+            args = {"title": title, "content": content, "kind": kind, "paper_id": paper_id, "page": page, "tags": tags or [], "project_id": project_id, "force": True}
             guard = self._guard(
                 "save_knowledge",
                 args,
@@ -548,14 +755,16 @@ class ToolRunner:
             )
             if guard:
                 return guard
-        guard = self._guard("save_knowledge", {"title": title, "content": content, "kind": kind, "paper_id": paper_id, "page": page, "tags": tags or []}, "保存到知识库", content)
+        guard = self._guard("save_knowledge", {"title": title, "content": content, "kind": kind, "paper_id": paper_id, "page": page, "tags": tags or [], "project_id": project_id}, "保存到知识库", content)
         if guard:
             return guard
         if paper_id:
             self._paper(paper_id)
+        if project_id:
+            self._project(project_id)
         item = KnowledgeItem(
             user_id=self.user.id, title=title[:390], content=content, kind=kind,
-            source_paper_id=paper_id, source_page=page, tags=tags or [],
+            source_paper_id=paper_id, source_page=page, tags=tags or [], project_id=project_id,
         )
         self.db.add(item)
         self.db.flush()
@@ -584,7 +793,11 @@ class ToolRunner:
         return {"summary": f"已在《{paper.title}》第 {page} 页保存批注", "citations": [], "data": {"annotation_id": annotation.id}}
 
     async def tool_extract_figures(self, paper_id: str | None = None, query: str = "") -> dict:
-        statement = select(Figure).where(Figure.user_id == self.user.id)
+        statement = select(Figure).where(
+            Figure.user_id == self.user.id,
+            Figure.ignored.is_(False),
+            Figure.is_page_snapshot.is_(False),
+        )
         if paper_id:
             paper = self._paper(paper_id)
             statement = statement.where(Figure.paper_id == paper.id)
@@ -681,6 +894,432 @@ class ToolRunner:
             lines.append(f"- 《{conversation.title}》（{message.created_at:%Y-%m-%d}）：{snippet}")
             data.append({"conversation_id": conversation.id, "message_id": message.id, "snippet": snippet})
         return {"summary": "\n".join(lines), "citations": [], "data": {"messages": data}}
+
+
+    # ---------------------------------------------------------------- V4 context tools
+    def _project(self, project_id: str) -> Project:
+        if project_id in self.exclude_ids:
+            raise ToolError("该项目已被用户排除，不能读取")
+        project = self.db.get(Project, project_id)
+        if project is None or project.user_id != self.user.id:
+            raise ToolError("未找到该研究项目，或无权访问")
+        return project
+
+    def _knowledge(self, knowledge_id: str) -> KnowledgeItem:
+        if knowledge_id in self.exclude_ids:
+            raise ToolError("该知识条目已被用户排除，不能读取")
+        item = self.db.get(KnowledgeItem, knowledge_id)
+        if item is None or item.user_id != self.user.id:
+            raise ToolError("未找到该知识条目，或无权访问")
+        return item
+
+    def _artifact(self, artifact_id: str) -> AcademicArtifact:
+        if artifact_id in self.exclude_ids:
+            raise ToolError("该学术成果已被用户排除，不能读取")
+        artifact = self.db.get(AcademicArtifact, artifact_id)
+        if artifact is None or artifact.user_id != self.user.id:
+            raise ToolError("未找到该学术成果，或无权访问")
+        return artifact
+
+    async def tool_search_knowledge(self, query: str, limit: int = 6, project_id: str | None = None) -> dict:
+        if not self.auto_retrieval:
+            raise ToolError("自动检索已关闭，请由用户显式选择知识条目")
+        if project_id:
+            self._project(project_id)
+        hits = [
+            (item, score)
+            for item, score in research_context.search_knowledge(
+                self.db, self.user, query, project_id=project_id, limit=max(1, min(limit, 12))
+            )
+            if item.id not in self.exclude_ids
+        ]
+        citations = []
+        for index, (item, score) in enumerate(hits):
+            citation = research_context.knowledge_citation(item, score)
+            citation["key"] = f"C{index + 1}"
+            citations.append(citation)
+        summary = "\n".join(
+            f"[C{index + 1}] [知识] {item.title}（{item.kind}，相关度 {score:.2f}）"
+            f"\n{(item.content or '')[:600]}"
+            for index, (item, score) in enumerate(hits)
+        ) or "个人知识库中没有找到与问题相关的条目。"
+        return {
+            "summary": summary,
+            "citations": citations,
+            "data": {
+                "items": [
+                    {
+                        "id": item.id, "title": item.title, "kind": item.kind,
+                        "tags": item.tags or [], "project_id": item.project_id,
+                        "source_paper_id": item.source_paper_id, "score": round(score, 4),
+                        "created_at": item.created_at.isoformat() if item.created_at else None,
+                    }
+                    for item, score in hits
+                ]
+            },
+        }
+
+    async def tool_read_knowledge(self, knowledge_id: str) -> dict:
+        item = self._knowledge(knowledge_id)
+        citation = research_context.knowledge_citation(item, 1.0)
+        citation["key"] = "C1"
+        return {
+            "summary": f"[C1] [知识] {item.title}\n{item.content}",
+            "citations": [citation],
+            "data": {
+                "id": item.id, "title": item.title, "content": item.content,
+                "kind": item.kind, "tags": item.tags or [], "project_id": item.project_id,
+                "source_paper_id": item.source_paper_id, "source_page": item.source_page,
+            },
+        }
+
+    async def tool_get_project_context(self, project_id: str) -> dict:
+        project = self._project(project_id)
+        items = list(
+            self.db.execute(
+                select(ProjectItem)
+                .where(ProjectItem.user_id == self.user.id, ProjectItem.project_id == project.id)
+                .order_by(ProjectItem.created_at.asc())
+            ).scalars().all()
+        )
+        notes = [item for item in items if item.kind in {"note", "笔记"}]
+        citation = research_context.project_citation(project)
+        citation["key"] = "C1"
+        resource_lines = [f"- {item.kind}: {item.title}" for item in items[:30]]
+        note_text = "\n".join(f"- {item.title}: {(item.content or '')[:600]}" for item in notes[:10])
+        summary = (
+            f"[C1] 项目「{project.name}」\n"
+            f"目标：{project.goal or '未填写'}\n描述：{project.description or '未填写'}\n"
+            f"进度：{project.progress}% · 状态：{project.status}\n"
+            f"关联资源：\n" + ("\n".join(resource_lines) or "无") +
+            ("\n\n项目笔记：\n" + note_text if note_text else "")
+        )
+        return {
+            "summary": summary,
+            "citations": [citation],
+            "data": {
+                "id": project.id, "name": project.name, "goal": project.goal,
+                "description": project.description, "progress": project.progress,
+                "status": project.status,
+                "items": [
+                    {"id": item.id, "kind": item.kind, "ref_id": item.ref_id, "title": item.title,
+                     "content": (item.content or "")[:1200], "meta": item.meta or {}}
+                    for item in items[:40]
+                ],
+            },
+        }
+
+    async def tool_search_project_resources(
+        self, project_id: str, resource_type: str = "all", query: str = ""
+    ) -> dict:
+        project = self._project(project_id)
+        items = list(
+            self.db.execute(
+                select(ProjectItem).where(
+                    ProjectItem.user_id == self.user.id, ProjectItem.project_id == project.id
+                ).order_by(ProjectItem.created_at.asc())
+            ).scalars().all()
+        )
+        kinds = {"paper", "knowledge", "image", "figure", "artifact", "note", "笔记", "成果", "图片", "知识"}
+        if resource_type != "all":
+            kinds = {resource_type, "note" if resource_type == "note" else resource_type}
+        lowered = query.lower().strip()
+        citations: list[dict] = []
+        rows: list[dict] = []
+        for item in items:
+            if item.kind not in kinds:
+                continue
+            if lowered and lowered not in ((item.title or "") + " " + (item.content or "")).lower():
+                continue
+            rows.append({"id": item.id, "kind": item.kind, "ref_id": item.ref_id, "title": item.title,
+                         "content": (item.content or "")[:1000]})
+            if item.kind == "paper" and item.ref_id:
+                paper = self.db.get(Paper, item.ref_id)
+                if paper and paper.user_id == self.user.id:
+                    rows[-1]["title"] = paper.title
+                    citation = {
+                        "chunk_id": f"project-paper:{project.id}:{paper.id}",
+                        "paper_id": paper.id, "paper_title": f"项目论文 · {paper.title}",
+                        "page": 0, "section": "研究项目", "quote": (paper.abstract or paper.title)[:1200],
+                        "resource_type": "paper", "resource_id": paper.id, "resource_title": paper.title,
+                    }
+                    citation["key"] = f"C{len(citations) + 1}"
+                    citations.append(citation)
+            elif item.kind in {"knowledge", "知识"} and item.ref_id:
+                knowledge = self.db.get(KnowledgeItem, item.ref_id)
+                if knowledge and knowledge.user_id == self.user.id:
+                    citation = research_context.knowledge_citation(knowledge, 1.0)
+                    citation["key"] = f"C{len(citations) + 1}"
+                    citations.append(citation)
+            elif item.kind in {"image", "figure", "图片"} and item.ref_id:
+                figure = self.db.get(Figure, item.ref_id)
+                if figure and figure.user_id == self.user.id:
+                    citation = research_context.image_citation(figure)
+                    citation["key"] = f"C{len(citations) + 1}"
+                    citations.append(citation)
+            elif item.kind in {"artifact", "成果"} and item.ref_id:
+                artifact = self.db.get(AcademicArtifact, item.ref_id)
+                if artifact and artifact.user_id == self.user.id:
+                    citation = research_context.artifact_citation(artifact)
+                    citation["key"] = f"C{len(citations) + 1}"
+                    citations.append(citation)
+        summary = "\n".join(
+            f"[C{index + 1}] [{row['kind']}] {row['title']} {('- ' + row['content'][:250]) if row['content'] else ''}"
+            for index, row in enumerate(rows[:20])
+        ) or "项目中没有找到符合条件的资源。"
+        return {"summary": summary, "citations": citations, "data": {"project_id": project.id, "items": rows}}
+
+    async def tool_search_images(self, query: str = "", paper_id: str | None = None, limit: int = 6) -> dict:
+        if not self.auto_retrieval:
+            raise ToolError("自动检索已关闭，请由用户显式选择图片")
+        paper_ids = None
+        if paper_id:
+            paper = self._paper(paper_id)
+            paper_ids = [paper.id]
+        elif self.scope_ids is not None:
+            paper_ids = self.scope_ids
+        figures = [
+            figure for figure in research_context.search_images(
+                self.db, self.user, query, paper_ids=paper_ids, limit=max(1, min(limit, 12))
+            )
+            if figure.id not in self.exclude_ids
+        ]
+        citations = []
+        for index, figure in enumerate(figures):
+            citation = research_context.image_citation(figure, self._paper_title(figure.paper_id))
+            citation["key"] = f"C{index + 1}"
+            citations.append(citation)
+        summary = "\n".join(
+            f"[C{index + 1}] [图片] {figure.caption or figure.kind}（论文 {figure.paper_id}，第 {figure.page_number} 页）"
+            for index, figure in enumerate(figures)
+        ) or "图像库中没有找到符合条件的图片。"
+        return {
+            "summary": summary,
+            "citations": citations,
+            "data": {"figures": [
+                {"id": f.id, "paper_id": f.paper_id, "page": f.page_number, "kind": f.kind,
+                 "caption": f.caption, "image_url": f"/api/figures/{f.id}/image",
+                 "width": f.width, "height": f.height}
+                for f in figures
+            ]},
+        }
+
+    def _paper_title(self, paper_id: str) -> str | None:
+        paper = self.db.get(Paper, paper_id)
+        return paper.title if paper and paper.user_id == self.user.id else None
+
+    async def _figure(self, image_id: str) -> Figure:
+        if image_id in self.exclude_ids:
+            raise ToolError("该图片已被用户排除，不能读取")
+        figure = self.db.get(Figure, image_id)
+        if figure is None or figure.user_id != self.user.id:
+            raise ToolError("未找到该图片，或无权访问")
+        if self.scope_ids is not None and figure.paper_id not in set(self.scope_ids):
+            raise ToolError("该图片不在本次研究范围内")
+        return figure
+
+    async def tool_read_image(self, image_id: str) -> dict:
+        figure = await self._figure(image_id)
+        meta = research_context.image_metadata(figure)
+        citation = research_context.image_citation(figure, self._paper_title(figure.paper_id))
+        citation["key"] = "C1"
+        if not meta.get("available"):
+            return {
+                "summary": f"[C1] 图片记录存在，但真实文件不可读：{meta.get('reason', '图片文件不存在')}。未进行视觉推断。",
+                "citations": [citation],
+                "data": {"image_id": figure.id, "metadata": meta, "vision_read": False},
+            }
+        return {
+            "summary": (
+                f"[C1] 已读取真实图片文件：{figure.caption or figure.kind}，"
+                f"{meta.get('width', 0)}×{meta.get('height', 0)}，{meta.get('size_bytes', 0)} bytes。"
+                "未进行视觉推断；如需语义分析，需要配置可用的视觉模型。"
+            ),
+            "citations": [citation],
+            "data": {"image_id": figure.id, "metadata": meta, "vision_read": False},
+        }
+
+    async def tool_analyze_image(self, image_id: str, question: str = "解释这张图") -> dict:
+        figure = await self._figure(image_id)
+        citation = research_context.image_citation(figure, self._paper_title(figure.paper_id))
+        citation["key"] = "C1"
+        provider = self.vision_provider
+        if not getattr(provider, "available", False):
+            status = research_context.vision_status(self.config)
+            return {
+                "summary": (
+                    f"无法完成真正的视觉分析：{getattr(provider, 'reason', status['reason'])} "
+                    f"图片 {figure.caption or figure.kind} 已定位，图注/页码可作为上下文，"
+                    "但不能把图注当作像素理解。"
+                ),
+                "citations": [citation],
+                "data": {"image_id": figure.id, "vision": status, "question": question},
+                "capability_limited": True,
+            }
+        asset = research_context.image_asset(figure)
+        if asset is None:
+            return {
+                "summary": f"[C1] 图片 {figure.caption or figure.kind} 的真实文件不可读，未进行视觉分析。",
+                "citations": [citation],
+                "data": {"image_id": figure.id, "vision": {"available": True, "provider": provider.name}, "question": question},
+                "capability_limited": True,
+            }
+        image_bytes, media_type = asset
+        result = provider.analyze(
+            image_bytes, media_type, question=question,
+            caption=figure.caption, paper_title=self._paper_title(figure.paper_id),
+        )
+        figure.ai_explanation = result.analysis[:8000]
+        self.db.commit()
+        return {
+            "summary": f"[C1] 视觉分析（{result.provider}/{result.model}，{result.elapsed_ms}ms）：{result.analysis}",
+            "citations": [citation],
+            "data": {
+                "image_id": figure.id, "vision": {
+                    "available": True, "provider": result.provider, "model": result.model,
+                    "elapsed_ms": result.elapsed_ms, "media_type": media_type,
+                },
+                "question": question,
+            },
+        }
+
+    async def tool_list_artifacts(self, kind: str = "", project_id: str | None = None, limit: int = 8) -> dict:
+        if not self.auto_retrieval:
+            raise ToolError("自动检索已关闭，请由用户显式选择成果")
+        if project_id:
+            self._project(project_id)
+        artifacts = [
+            artifact for artifact in research_context.search_artifacts(
+                self.db, self.user, "", project_id=project_id, limit=max(1, min(limit, 20))
+            )
+            if artifact.id not in self.exclude_ids
+        ]
+        if kind:
+            artifacts = [artifact for artifact in artifacts if artifact.kind == kind]
+        citations = []
+        for index, artifact in enumerate(artifacts):
+            citation = research_context.artifact_citation(artifact)
+            citation["key"] = f"C{index + 1}"
+            citations.append(citation)
+        summary = "\n".join(
+            f"[C{index + 1}] [成果] {artifact.title}（{artifact.kind}，{artifact.quality_status}，{artifact.quality_score} 分）"
+            for index, artifact in enumerate(artifacts)
+        ) or "没有找到已有学术成果。"
+        return {"summary": summary, "citations": citations, "data": {"artifacts": [
+            {"id": a.id, "title": a.title, "kind": a.kind, "quality_status": a.quality_status,
+             "quality_score": a.quality_score, "paper_ids": a.paper_ids or [],
+             "created_at": a.created_at.isoformat() if a.created_at else None}
+            for a in artifacts
+        ]}}
+
+    async def tool_read_artifact(self, artifact_id: str) -> dict:
+        artifact = self._artifact(artifact_id)
+        citation = research_context.artifact_citation(artifact)
+        citation["key"] = "C1"
+        return {
+            "summary": f"[C1] [成果] {artifact.title}\n{artifact.content[:3500]}",
+            "citations": [citation],
+            "data": {"id": artifact.id, "title": artifact.title, "content": artifact.content,
+                     "kind": artifact.kind, "quality_status": artifact.quality_status,
+                     "quality_score": artifact.quality_score, "paper_ids": artifact.paper_ids or []},
+        }
+
+    async def tool_generate_artifact(
+        self, kind: str, title: str | None = None, scope_type: str = "papers",
+        scope_id: str | None = None, paper_ids: list[str] | None = None,
+        knowledge_ids: list[str] | None = None, image_ids: list[str] | None = None,
+    ) -> dict:
+        args = {"kind": kind, "title": title, "scope_type": scope_type, "scope_id": scope_id,
+                "paper_ids": paper_ids or [], "knowledge_ids": knowledge_ids or [],
+                "image_ids": image_ids or []}
+        guard = self._guard("generate_artifact", args, "生成学术成果", f"{kind} · {title or ''}")
+        if guard:
+            return guard
+        from . import artifacts as artifact_service
+        artifact, report = await artifact_service.generate_artifact(
+            self.db, self.user, kind=kind, scope_type=scope_type, scope_id=scope_id,
+            paper_ids=paper_ids, title=title, config=self.config,
+        )
+        source_knowledge = [self._knowledge(item) for item in (knowledge_ids or []) if item]
+        source_images = [self.db.get(Figure, item) for item in (image_ids or []) if item]
+        source_images = [figure for figure in source_images if figure is not None and figure.user_id == self.user.id]
+        source_citations = []
+        source_lines = []
+        for index, item in enumerate(source_knowledge):
+            source_citations.append(research_context.knowledge_citation(item, 1.0))
+            source_citations[-1]["key"] = f"K{index + 1}"
+            source_lines.append(f"- [知识 K{index + 1}] {item.title}（{item.id}）")
+        for index, figure in enumerate(source_images):
+            source_citations.append(research_context.image_citation(figure, self._paper_title(figure.paper_id)))
+            source_citations[-1]["key"] = f"I{index + 1}"
+            source_lines.append(f"- [图片 I{index + 1}] {figure.caption or figure.kind}（第 {figure.page_number} 页，{figure.id}）")
+        if source_lines:
+            artifact.content = (artifact.content or "") + "\n\n## 跨模块上下文来源\n\n" + "\n".join(source_lines)
+            artifact.citations = list(artifact.citations or []) + source_citations
+            self.db.commit()
+        if scope_type == "project" and scope_id:
+            project = self._project(scope_id)
+            exists = self.db.execute(
+                select(ProjectItem).where(
+                    ProjectItem.user_id == self.user.id,
+                    ProjectItem.project_id == project.id,
+                    ProjectItem.kind == "artifact",
+                    ProjectItem.ref_id == artifact.id,
+                )
+            ).scalar_one_or_none()
+            if exists is None:
+                self.db.add(ProjectItem(
+                    project_id=project.id, user_id=self.user.id, kind="artifact",
+                    ref_id=artifact.id, title=artifact.title,
+                ))
+                self.db.commit()
+        citation = research_context.artifact_citation(artifact)
+        citation["key"] = "C1"
+        return {
+            "summary": f"[C1] 已生成学术成果「{artifact.title}」，质量状态 {report.status}（{report.score} 分）。",
+            "citations": [citation],
+            "data": {"artifact_id": artifact.id, "quality": {"status": report.status, "score": report.score, "summary": report.summary, "issues": report.issues}},
+        }
+
+    async def tool_check_artifact(self, artifact_id: str) -> dict:
+        artifact = self._artifact(artifact_id)
+        from . import artifacts as artifact_service
+        report = artifact_service.check_artifact(self.db, artifact)
+        record = ArtifactQualityReport(
+            user_id=self.user.id, artifact_id=artifact.id, status=report["status"],
+            score=report["score"], issues=report["issues"], summary=report["summary"], checked_at=utcnow(),
+        )
+        self.db.add(record)
+        artifact.quality_status = report["status"]
+        artifact.quality_score = report["score"]
+        self.db.commit()
+        citation = research_context.artifact_citation(artifact)
+        citation["key"] = "C1"
+        issues = "\n".join(
+            f"- [{issue.get('severity')}] {issue.get('location')}: {issue.get('message')}"
+            for issue in report["issues"][:12]
+        )
+        return {
+            "summary": f"[C1] 成果「{artifact.title}」质量检查：{report['summary']}\n{issues}",
+            "citations": [citation],
+            "data": {"artifact_id": artifact.id, "quality": report},
+        }
+
+    async def tool_export_artifact(self, artifact_id: str, format: str = "md") -> dict:
+        artifact = self._artifact(artifact_id)
+        guard = self._guard(
+            "export_artifact", {"artifact_id": artifact_id, "format": format},
+            "导出学术成果", f"{artifact.title} ({format})",
+        )
+        if guard:
+            return guard
+        from . import artifacts as artifact_service
+        record = artifact_service.export_artifact(self.db, self.user, artifact, format)
+        return {
+            "summary": f"已导出「{artifact.title}」为 {format}：{record.filename}",
+            "citations": [],
+            "data": {"export_id": record.id, "filename": record.filename},
+        }
 
 
 def compact_tool_payload(result: dict, limit: int = 6000) -> str:

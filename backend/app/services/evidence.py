@@ -319,6 +319,40 @@ def harvest_citations(
         quote = str(citation.get("quote") or "")
         if not quote:
             continue
+        resource_type = citation.get("resource_type")
+        if resource_type in {"knowledge", "image", "artifact", "project"} and citation.get("resource_id"):
+            try:
+                record, is_new = create_evidence(
+                    db,
+                    user,
+                    paper_id=None,
+                    chunk_id=None,
+                    page=citation.get("page"),
+                    section=citation.get("section"),
+                    quote=quote,
+                    claim=claim,
+                    evidence_type=default_type,
+                    source_type=resource_type,
+                    source_id=str(citation.get("resource_id")),
+                    analysis_id=analysis_id,
+                    meta={
+                        "citation_key": citation.get("key"),
+                        "resource_title": citation.get("resource_title"),
+                        "resource_type": resource_type,
+                        "source_paper_id": citation.get("paper_id"),
+                        "answer_source_type": source_type,
+                        "answer_source_id": source_id,
+                        "analysis_kind": analysis_kind,
+                    },
+                )
+            except EvidenceError:
+                skipped += 1
+                continue
+            if is_new:
+                created.append(record)
+            else:
+                skipped += 1
+            continue
         try:
             record, is_new = create_evidence(
                 db,

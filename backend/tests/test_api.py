@@ -203,7 +203,8 @@ def test_summary_local_mode(client, auth, paper):
     body = response.json()
     assert body["local"] is True
     assert body["citations"]
-    assert "本地抽取模式" in body["content"]
+    assert "本地抽取" in body["content"]
+    assert "不是生成或推断" in body["content"]
 
 
 def test_translation_requires_model(client, auth, paper):
@@ -321,7 +322,7 @@ def test_agent_write_action_requires_confirmation(client, auth, paper):
     assert actions, "write tool should produce a pending action"
     action = actions[0]
     assert action["tool"] == "save_knowledge"
-    confirmed = client.post("/api/agent/actions/confirm", headers=auth["headers"], json={"tool": action["tool"], "args": action["args"]})
+    confirmed = client.post("/api/agent/actions/confirm", headers=auth["headers"], json={"tool": action["tool"], "args": action["args"], "action_id": action.get("action_id")})
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["result"]["data"]["knowledge_id"]
     items = client.get("/api/knowledge", headers=auth["headers"])

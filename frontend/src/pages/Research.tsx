@@ -23,11 +23,19 @@ import { useEvidence } from "../store/EvidenceContext";
 import { api, downloadFile } from "../lib/api";
 import type { Citation, Collection, ConflictResult, EvolutionResult, MatrixResult, OutlineChunk, Paper } from "../lib/types";
 import { ConflictView, EvolutionView, GapValidationPanel, MatrixView } from "../components/ResearchPanels";
-import { cn, truncate } from "../lib/utils";
+import { cn, relativeTime, truncate } from "../lib/utils";
 import { Badge, Button, Card, EmptyState, Field, IconButton, Input, Modal, Select, Tabs } from "../components/ui";
 import { MarkdownView } from "../components/Markdown";
 
 const DIMENSIONS = ["研究方法", "实验设计", "创新点", "局限性", "研究结论", "可复现性"];
+const DIMENSION_ALIASES: Record<string, string[]> = {
+  研究方法: ["研究方法", "方法"],
+  实验设计: ["实验设计", "实验设置", "实验"],
+  创新点: ["创新点", "创新"],
+  局限性: ["局限性", "局限"],
+  研究结论: ["研究结论", "主要结论", "结论"],
+  可复现性: ["可复现性", "复现"],
+};
 
 interface Result {
   content: string;
@@ -35,6 +43,19 @@ interface Result {
   local: boolean;
   analysisId?: string;
   evidenceCount?: number;
+}
+
+interface InsightHistory {
+  id: string;
+  kind: string;
+  scope_type: string;
+  paper_ids: string[];
+  data: ConflictResult | EvolutionResult;
+  citations: Citation[];
+  local: boolean;
+  model?: string | null;
+  analysis_id?: string | null;
+  created_at: string;
 }
 
 export function Research() {
@@ -47,11 +68,14 @@ export function Research() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [query, setQuery] = useState("");
-  const [focus, setFocus] = useState("研究方法、实验设计与主要结论");
+  const [focus, setFocus] = useState("研究方法、实验设计、研究结论");
   const [result, setResult] = useState<Result | null>(null);
   const [matrix, setMatrix] = useState<MatrixResult | null>(null);
   const [conflicts, setConflicts] = useState<ConflictResult | null>(null);
   const [evolution, setEvolution] = useState<EvolutionResult | null>(null);
+  const [insights, setInsights] = useState<InsightHistory[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [activeInsightId, setActiveInsightId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
@@ -82,6 +106,20 @@ export function Research() {
   }, [load]);
 
   useEffect(() => {
+    if (tab !== "conflicts" && tab !== "evolution") {
+      setInsights([]);
+      return;
+    }
+    let active = true;
+    setHistoryLoading(true);
+    api<{ items: InsightHistory[] }>("/research/insights?kind=" + tab + "&limit=8")
+      .then((response) => { if (active) setInsights(response.items); })
+      .catch(() => { if (active) setInsights([]); })
+      .finally(() => { if (active) setHistoryLoading(false); });
+    return () => { active = false; };
+  }, [tab]);
+
+  useEffect(() => {
     if (tab === "gap" && searchParams.get("collection")) {
       setGapCollection(searchParams.get("collection") || "");
     }
@@ -100,6 +138,26 @@ export function Research() {
 
   function toggle(id: string) {
     setSelected((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  }
+
+  function focusParts(value: string): string[] {
+    return value.split("、").map((item) => item.trim()).filter(Boolean);
+  }
+
+  function toggleDimension(dimension: string) {
+    setFocus((current) => {
+      const aliases = DIMENSION_ALIASES[dimension] || [dimension];
+      const parts = focusParts(current);
+      if (parts.some((item) => aliases.includes(item))) {
+        return parts.filter((item) => !aliases.includes(item)).join("、");
+      }
+      return [...parts, dimension].join("、");
+    });
+  }
+
+  function isDimensionSelected(dimension: string) {
+    const aliases = DIMENSION_ALIASES[dimension] || [dimension];
+    return focusParts(focus).some((item) => aliases.includes(item));
   }
 
   async function runCompare() {
@@ -194,6 +252,13 @@ export function Research() {
     }
   }
 
+  function openInsight(insight: InsightHistory) {
+    setActiveInsightId(insight.id);
+    setError(null);
+    if (tab === "conflicts") setConflicts(insight.data as ConflictResult);
+    if (tab === "evolution") setEvolution(insight.data as EvolutionResult);
+  }
+
   async function runConflicts() {
     if (selected.length < 2) {
       toast("冲突检测至少需要两篇论文", "error");
@@ -205,6 +270,9 @@ export function Research() {
     try {
       const response = await api<ConflictResult>("/research/conflicts", { method: "POST", body: { paper_ids: selected } });
       setConflicts(response);
+      setActiveInsightId(response.insight_id || null);
+      const refreshed = await api<{ items: InsightHistory[] }>("/research/insights?kind=conflicts&limit=8");
+      setInsights(refreshed.items);
     } catch (requestError) {
       setError((requestError as Error).message || "冲突分析失败");
     } finally {
@@ -223,6 +291,9 @@ export function Research() {
     try {
       const response = await api<EvolutionResult>("/research/evolution", { method: "POST", body: { paper_ids: selected } });
       setEvolution(response);
+      setActiveInsightId(response.insight_id || null);
+      const refreshed = await api<{ items: InsightHistory[] }>("/research/insights?kind=evolution&limit=8");
+      setInsights(refreshed.items);
     } catch (requestError) {
       setError((requestError as Error).message || "方法演化分析失败");
     } finally {
@@ -324,7 +395,7 @@ export function Research() {
         }}
       />
 
-      <div className="research-grid">
+      <div className={cn("research-grid", (tab === "conflicts" || tab === "evolution") && "research-grid-single")}>
         <section className="research-main">
           {tab !== "fragments" ? (
             <>
@@ -411,15 +482,19 @@ export function Research() {
                   <Input value={focus} onChange={(event) => setFocus(event.target.value)} placeholder="例如：训练效率、数据规模与评估方法" />
                 </Field>
                 <div className="dimension-chips">
-                  {DIMENSIONS.map((dimension) => (
-                    <button
-                      key={dimension}
-                      className="dimension-chip"
-                      onClick={() => setFocus((current) => (current.includes(dimension) ? current : (current ? current + "、" : "") + dimension))}
-                    >
-                      + {dimension}
-                    </button>
-                  ))}
+                  {DIMENSIONS.map((dimension) => {
+                    const selectedDimension = isDimensionSelected(dimension);
+                    return (
+                      <button
+                        key={dimension}
+                        className={cn("dimension-chip", selectedDimension && "active")}
+                        aria-pressed={selectedDimension}
+                        onClick={() => toggleDimension(dimension)}
+                      >
+                        {selectedDimension ? "✓" : "+"} {dimension}
+                      </button>
+                    );
+                  })}
                 </div>
                 <div className="research-run">
                   <span className="muted small">
@@ -548,12 +623,46 @@ export function Research() {
             <GapValidationPanel paperIds={selected} onOpen={openPaper} />
           )}
 
+          {(tab === "conflicts" || tab === "evolution") && (
+            <Card className="research-history">
+              <div className="research-history-head">
+                <div>
+                  <strong>最近生成</strong>
+                  <span>{tab === "conflicts" ? "之前的观点冲突检查" : "之前的方法演化时间线"}</span>
+                </div>
+                <span>{historyLoading ? "加载中…" : insights.length + " 条"}</span>
+              </div>
+              {insights.length === 0 ? (
+                <p className="muted small">还没有历史记录。生成一次后会保存在这里。</p>
+              ) : (
+                <div className="research-history-list">
+                  {insights.map((item) => {
+                    const count = tab === "conflicts"
+                      ? (item.data as ConflictResult).conflicts?.length || 0
+                      : (item.data as EvolutionResult).timeline?.length || 0;
+                    return (
+                      <button
+                        key={item.id}
+                        className={cn("research-history-item", activeInsightId === item.id && "active")}
+                        onClick={() => openInsight(item)}
+                      >
+                        <span>{relativeTime(item.created_at)}</span>
+                        <strong>{tab === "conflicts" ? count + " 条冲突" : count + " 篇时间线"}</strong>
+                        <small>{item.paper_ids.length} 篇论文</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
+          )}
+
           {tab === "matrix" && matrix && <MatrixView data={matrix} onOpen={openPaper} />}
           {tab === "conflicts" && conflicts && <ConflictView data={conflicts} onOpen={openPaper} />}
           {tab === "evolution" && evolution && <EvolutionView data={evolution} onOpen={openPaper} />}
         </section>
 
-        <aside className="research-rail">
+        {(tab !== "conflicts" && tab !== "evolution") && <aside className="research-rail">
           <Card className="rail-card">
             <div className="rail-card-head"><span>对比方法</span><Scale size={15} /></div>
             <ol className="research-steps">
@@ -588,7 +697,7 @@ export function Research() {
             <strong>研究缺口 ≠ 领域空白</strong>
             <p>PaperLens 只基于你的资料库给出候选线索，并说明验证方式。不要把有限文献的结论当成整个领域的定论。</p>
           </Card>
-        </aside>
+        </aside>}
       </div>
 
       <Modal

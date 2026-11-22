@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     llm_timeout_seconds: int = 180
     request_timeout_seconds: int = 300
+    agent_max_rounds: int = 8
+    agent_max_tool_calls: int = 20
+    agent_timeout_seconds: int = 240
+    agent_tool_timeout_seconds: int = 45
+    agent_token_budget: int = 30000
+    vision_provider: str = "none"
+    vision_model: str | None = None
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 600
     encryption_key: str | None = Field(

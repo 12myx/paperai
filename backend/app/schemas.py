@@ -33,6 +33,11 @@ class ChatStreamRequest(BaseModel):
     scope_type: str = "all"
     scope_ids: list[str] = Field(default_factory=list)
     project_id: str | None = None
+    knowledge_ids: list[str] = Field(default_factory=list)
+    image_ids: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+    exclude_ids: list[str] = Field(default_factory=list)
+    auto_retrieval: bool = True
     auto_approve_writes: bool = False
 
 
@@ -80,6 +85,7 @@ class ProjectCreate(BaseModel):
     description: str | None = None
     goal: str | None = None
     color: str = "#2F6F62"
+    paper_ids: list[str] = Field(default_factory=list)
 
 
 class ProjectUpdate(BaseModel):
@@ -200,11 +206,14 @@ class ModelKeyRequest(BaseModel):
 class ConfirmActionRequest(BaseModel):
     tool: str
     args: dict = Field(default_factory=dict)
+    action_id: str | None = None
 
 
 class FigureUpdate(BaseModel):
     note: str | None = None
     saved: bool | None = None
+    ignored: bool | None = None
+    review_status: str | None = None
 
 
 class ConversationUpdate(BaseModel):
@@ -257,6 +266,7 @@ class AgentTaskPlanRequest(BaseModel):
     mode: str = "quick"
     scope_type: str = "all"
     scope_ids: list[str] = Field(default_factory=list)
+    project_id: str | None = None
 
 
 class AgentTaskPlanUpdate(BaseModel):
